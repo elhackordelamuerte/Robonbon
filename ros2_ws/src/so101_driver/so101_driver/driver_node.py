@@ -10,10 +10,12 @@ from pathlib import Path
 import rclpy
 import rclpy.node
 from cv_bridge import CvBridge
+from geometry_msgs.msg import PoseStamped
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from so101_sim import SO101Sim
+from std_srvs.srv import Trigger
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -46,6 +48,7 @@ CONTROL_HZ = 50.0
 JOINT_STATE_HZ = 30.0
 CAMERA_HZ = 10.0
 CAMERA_FRAME = "external_cam"
+FAKE_PERCEPTION_HZ = 5.0
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
@@ -86,6 +89,14 @@ class DriverNode(rclpy.node.Node):
             self._camera_info_pub = self.create_publisher(CameraInfo, "/external_cam/camera_info", 10)
             self._camera_info = self._make_camera_info()
             self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
+
+            # Stand-in for perception_node while it doesn't exist: publishes the
+            # ground truth from MuJoCo. Off by default, never use it for the evaluation.
+            self.declare_parameter("fake_perception", False)
+            self._object_pub = self.create_publisher(PoseStamped, "/object_position", 10)
+            self._box_pub = self.create_publisher(PoseStamped, "/drop_box_position", 10)
+            self.create_timer(1.0 / FAKE_PERCEPTION_HZ, self._publish_ground_truth)
+            self.create_service(Trigger, "/reset_object", self._srv_reset_object)
 
         self.get_logger().info("Driver node ready.")
 
@@ -167,6 +178,31 @@ class DriverNode(rclpy.node.Node):
         self._camera_info.header.stamp = img.header.stamp
         self._image_pub.publish(img)
         self._camera_info_pub.publish(self._camera_info)
+
+    def _publish_ground_truth(self):
+        if not self.get_parameter("fake_perception").value:
+            return
+        stamp = self.get_clock().now().to_msg()
+        obj = PoseStamped()
+        obj.header.stamp, obj.header.frame_id = stamp, "world"
+        obj.pose.position.x, obj.pose.position.y, obj.pose.position.z = map(float, self._robot.get_object_position())
+        w, x, y, z = self._robot.data.body("pickup_object").xquat
+        obj.pose.orientation.w, obj.pose.orientation.x = float(w), float(x)
+        obj.pose.orientation.y, obj.pose.orientation.z = float(y), float(z)
+        self._object_pub.publish(obj)
+
+        box = PoseStamped()
+        box.header.stamp, box.header.frame_id = stamp, "world"
+        box.pose.position.x, box.pose.position.y, box.pose.position.z = map(float, self._robot.get_drop_box_position())
+        box.pose.orientation.w = 1.0
+        self._box_pub.publish(box)
+
+    def _srv_reset_object(self, request, response):
+        self._robot.randomize_object()
+        p = self._robot.get_object_position()
+        response.success = True
+        response.message = f"object at ({p[0]:.3f}, {p[1]:.3f})"
+        return response
 
 
 def main(args=None):
