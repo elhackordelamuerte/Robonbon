@@ -20,11 +20,13 @@ Ce tuto remplace la slide « Setup » pour les Mac. Il a été testé sur un Mac
 Depuis la racine du dépôt :
 
 ```bash
-./scripts/start.sh            # lance control + viz + RViz, puis ouvre le navigateur
+./scripts/start.sh            # lance control + viz + panneau (:8080) + RViz (:6080)
 ./scripts/start.sh --build    # idem, en reconstruisant l'image d'abord
 ./scripts/start.sh --no-rviz  # sans RViz
 ./scripts/stop.sh             # arrête tout
 ```
+
+**Piloter le bras :** panneau web sur http://localhost:8080 (sliders, poses, séquences animées).
 
 La config RViz est enregistrée dans `ros2_ws/so101.rviz` : avec **Ctrl+S** dans RViz, et automatiquement par `stop.sh`.
 

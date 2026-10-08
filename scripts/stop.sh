@@ -6,6 +6,7 @@ set -euo pipefail
 
 RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTENEUR_RVIZ="tek5-rviz"
+CONTENEUR_PANNEAU="tek5-panel"
 export DISPLAY="${DISPLAY:-}"   # évite le warning du compose sur Mac
 
 docker info >/dev/null 2>&1 || { echo "❌ Docker n'est pas lancé." >&2; exit 1; }
@@ -35,7 +36,12 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$CONTENEUR_RVIZ"; then
   docker rm -f "$CONTENEUR_RVIZ" >/dev/null
 fi
 
-# Le conteneur RViz est supprimé avant : il utilise le réseau tek5_rosnet,
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTENEUR_PANNEAU"; then
+  echo "🛑 Arrêt du panneau de pilotage…"
+  docker rm -f "$CONTENEUR_PANNEAU" >/dev/null
+fi
+
+# Les conteneurs RViz et panneau sont supprimés avant : ils utilisent le réseau tek5_rosnet,
 # qui bloquerait sinon sa suppression par `compose down`.
 echo "🛑 Arrêt de control + viz (le driver déconnecte proprement le bras)…"
 docker compose -f "$RACINE/docker/docker-compose.yml" down

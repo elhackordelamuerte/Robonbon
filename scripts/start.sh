@@ -4,6 +4,7 @@
 #   ./scripts/start.sh            # lance tout et ouvre RViz
 #   ./scripts/start.sh --build    # reconstruit l'image avant
 #   ./scripts/start.sh --no-rviz  # sans RViz
+#   Panneau de pilotage du bras : http://localhost:8080 (toujours lancé)
 set -euo pipefail
 
 RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,6 +12,9 @@ COMPOSE=(docker compose -f "$RACINE/docker/docker-compose.yml")
 CONTENEUR_RVIZ="tek5-rviz"
 VOLUME_RVIZ="tek5-rviz-config"   # préférences RViz (~/.rviz2) conservées entre les lancements
 RESEAU="tek5_rosnet"
+CONTENEUR_PANNEAU="tek5-panel"
+PORT_PANNEAU=8080
+URL_PANNEAU="http://localhost:${PORT_PANNEAU}"
 PORT_NOVNC=6080
 URL_RVIZ="http://localhost:${PORT_NOVNC}/vnc.html?autoconnect=true&resize=scale"
 DELAI_MAX_S=180
@@ -33,7 +37,7 @@ export DISPLAY="${DISPLAY:-}"   # évite le warning du compose sur Mac
 
 attendre_log() {  # attendre_log <commande logs> <motif> <message>
   local motif=$2 debut=$SECONDS
-  until eval "$1" 2>/dev/null | grep -q -E "$motif"; do
+  until eval "$1" 2>&1 | grep -q -E "$motif"; do
     if (( SECONDS - debut > DELAI_MAX_S )); then
       echo "❌ Délai dépassé : $3" >&2; exit 1
     fi
@@ -57,6 +61,16 @@ if "${COMPOSE[@]}" logs --since 5m control 2>/dev/null | grep -q Traceback; then
   exit 1
 fi
 echo "✅ Driver prêt."
+
+echo "🎛️  Démarrage du panneau de pilotage…"
+docker rm -f "$CONTENEUR_PANNEAU" >/dev/null 2>&1 || true
+docker run -d --name "$CONTENEUR_PANNEAU" --network "$RESEAU" -p "127.0.0.1:${PORT_PANNEAU}:8080" \
+  -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA \
+  -v "$RACINE/ros2_ws/tools/joint_panel:/panel" tek5/control \
+  bash -c "source /opt/ros/jazzy/setup.bash && exec python3 /panel/panel.py" >/dev/null
+attendre_log "docker logs $CONTENEUR_PANNEAU" "Panneau prêt|Traceback" "panneau"
+echo "✅ Panneau prêt : $URL_PANNEAU"
+command -v open >/dev/null && open "$URL_PANNEAU" || true
 
 if $AVEC_RVIZ; then
   echo "🖥️  Démarrage de RViz (noVNC)…"
@@ -85,7 +99,10 @@ fi
 
 cat <<EOF
 
-Tout est lancé. Pour bouger le bras :
+Tout est lancé.
+  Panneau de pilotage : $URL_PANNEAU
+
+Ou à la main :
   cd docker && docker compose exec control bash
   source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash
   ros2 topic pub -r 10 --times 10 /joint_command sensor_msgs/msg/JointState \\

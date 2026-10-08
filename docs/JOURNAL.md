@@ -12,6 +12,7 @@ Sommaire :
 5. [Implémenter `driver_node` et faire bouger le bras (jalon S2)](#étape-5--implémenter-driver_node-et-faire-bouger-le-bras-jalon-s2)
 6. [Scripts pour tout lancer / tout arrêter](#étape-6--scripts-pour-tout-lancer--tout-arrêter)
 7. [Persistance de la configuration RViz](#étape-7--persistance-de-la-configuration-rviz)
+8. [Panneau web de pilotage du bras](#étape-8--panneau-web-de-pilotage-du-bras)
 
 ---
 
@@ -198,3 +199,48 @@ Le fichier de config lui-même (`/ros2_ws/so101.rviz`) est bien monté depuis l'
 - Ctrl+S via `xdotool` → la date de modification de `ros2_ws/so101.rviz` change, et `git diff` montre la vue et les panneaux enregistrés ✅
 - `stop.sh` → message « Config RViz enregistrée », date du fichier mise à jour ✅
 - `start.sh` → `docker inspect tek5-rviz` montre bien `tek5-rviz-config -> /root/.rviz2` ✅
+
+---
+
+## Étape 8 — Panneau web de pilotage du bras
+
+**Objectif :** animer le bras plus simplement qu'en tapant des `ros2 topic pub /joint_command ...`.
+
+**Fichiers :** `ros2_ws/tools/joint_panel/` (`panel.py`, `index.html`, `poses.json`). Lancé par `start.sh`
+dans le conteneur `tek5-panel`, sur **http://localhost:8080**.
+
+**Fonctionnalités :**
+- un slider et un champ numérique par joint, bornés aux limites du URDF (pince 0-100 %), avec la position mesurée à côté ;
+- *Envoi direct* (le bras suit le slider, envois limités à 10 par seconde) ou bouton *Envoyer* ;
+- *← Position actuelle* (recopie l'état mesuré dans les sliders) et *Position zéro* ;
+- **poses** nommées, enregistrées dans `poses.json` : *Aller*, *+ Séquence*, supprimer ;
+- **séquences** : liste de poses avec une durée par étape, ordre modifiable, lecture simple ou en boucle, *Stop*,
+  enregistrement sous un nom ;
+- la **commande `ros2 topic pub` équivalente** est affichée en direct (bouton *Copier*), pour faire le lien avec le CLI.
+
+**Conception :**
+
+| Élément | Choix |
+|---|---|
+| Serveur | Nœud rclpy `joint_panel` + `http.server` de la bibliothèque standard : aucune dépendance à installer. `rclpy.spin` tourne dans un thread, le serveur HTTP dans le thread principal. |
+| API | `GET /api/etat`, `GET/POST /api/poses`, `POST /api/commande`, `POST /api/lecture`, `POST /api/stop`. Valeurs bornées côté serveur ; requête vide ou mal formée → erreur 400. |
+| Animation | Interpolation linéaire côté serveur, depuis la position **mesurée** vers chaque pose, publiée à 30 Hz sur `/joint_command`. Une nouvelle commande manuelle interrompt la lecture en cours. |
+| Règle du sujet | Le panneau passe uniquement par `/joint_command`, sans accès direct au backend. |
+
+**Problèmes rencontrés :**
+1. `start.sh` signalait un délai dépassé alors que le panneau était prêt. **Cause :** le logger ROS écrit sur
+   stderr, et la fonction d'attente faisait `2>/dev/null`. **Correction :** `2>&1` dans `attendre_log`.
+2. Pendant le test, `shoulder_pan` ne tournait presque pas. **Cause :** une consigne précédente
+   (`shoulder_lift` à la limite de 1.745 rad) plaquait le bras contre le sol, et le frottement bloquait la rotation.
+   Ce n'est pas un bug du panneau : en remettant le bras au repos, tout bouge normalement.
+   ⚠️ Toutes les positions dans les limites du URDF ne sont pas atteignables : le bras peut entrer en collision avec la table.
+
+**Vérification :**
+- `GET /` → 200 ; `/api/etat` renvoie les 6 joints ✅
+- `POST /api/commande` avec `shoulder_lift: 15` → valeur bornée à 1.745, et le bras bouge ✅
+- Séquence de 2 poses (1,5 s chacune) → `en_lecture` passe à vrai puis à faux ; pose finale atteinte
+  (`pan=-0.90`, `roll=-0.80`, pince 80 %) ✅. Les servos simulés suivent la consigne avec un peu de retard.
+- `POST /api/lecture` avec une séquence vide → 400 `séquence vide` ✅
+- `ruff check` → aucune erreur
+
+`poses.json` contient des poses d'exemple (`repos`, `lever`, `gauche`, `droite`) et une séquence `démo`.
