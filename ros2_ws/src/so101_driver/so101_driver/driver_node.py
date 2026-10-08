@@ -4,20 +4,14 @@
 The only node that talks to the backend: SO101Sim (MuJoCo) or SO101Follower
 (real arm), chosen by the `use_sim` parameter. The rest of the stack never
 knows which one runs.
-
-TODO:
-  - Connect the backend according to use_sim (real arm: `port` parameter and
-    the calibration file mounted at CALIBRATION_FILE, see docker/.env)
-  - Publish /joint_states in RADIANS (>= 20 Hz)
-  - Subscribe to /joint_command (radians, gripper 0-100 %)
-  - Disconnect the backend when the node stops
 """
 from pathlib import Path
 
 import rclpy
 import rclpy.node
+from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import CameraInfo, Image, JointState
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -27,6 +21,16 @@ JOINT_NAMES = [
     "wrist_roll",
     "gripper",
 ]
+
+# Arm joint limits from the URDF (rad). The gripper is commanded in %.
+JOINT_LIMITS = {
+    "shoulder_pan": (-1.91986, 1.91986),
+    "shoulder_lift": (-1.74533, 1.74533),
+    "elbow_flex": (-1.69, 1.69),
+    "wrist_flex": (-1.65806, 1.65806),
+    "wrist_roll": (-2.74385, 2.84121),
+    "gripper": (0.0, 100.0),
+}
 
 # Gripper joint limits in the URDF (rad).
 # LeRobot convention: 0 % = closed (lower), 100 % = open (upper).
@@ -38,10 +42,18 @@ DEFAULT_PORT = "/dev/ttyACM0"
 
 CONTROL_HZ = 50.0
 JOINT_STATE_HZ = 30.0
+CAMERA_HZ = 10.0
+CAMERA_FRAME = "external_cam"
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
-    raise NotImplementedError("TO DO")
+    lo, hi = GRIPPER_RANGE_RAD
+    return lo + min(max(pct, 0.0), 100.0) / 100.0 * (hi - lo)
+
+
+def _clamp(name: str, value: float) -> float:
+    lo, hi = JOINT_LIMITS[name]
+    return min(max(value, lo), hi)
 
 
 class DriverNode(rclpy.node.Node):
@@ -54,25 +66,103 @@ class DriverNode(rclpy.node.Node):
         mode = "simulation" if self._use_sim else "hardware"
         self.get_logger().info(f"Mode: {mode} (port={port})")
 
-        # TODO: connect the backend, create the publishers, subscribers and timers.
+        self._robot = self._connect_arm(port)
+
+        # Hold the current pose until the first command, instead of jumping to 0.
+        self._obs = self._robot.get_observation()
+        self._target = {name: self._obs[f"{name}.pos"] for name in JOINT_NAMES}
+
+        self._joint_state_pub = self.create_publisher(JointState, "/joint_states", 10)
+        self.create_subscription(JointState, "/joint_command", self._cb_joint_command, 10)
+        self.create_timer(1.0 / CONTROL_HZ, self._control_step)
+        self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
+
+        if self._use_sim:
+            self._bridge = CvBridge()
+            self._image_pub = self.create_publisher(Image, "/external_cam/image_raw", 10)
+            self._camera_info_pub = self.create_publisher(CameraInfo, "/external_cam/camera_info", 10)
+            self._camera_info = self._make_camera_info()
+            self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
 
         self.get_logger().info("Driver node ready.")
 
     def _connect_arm(self, port: str = DEFAULT_PORT):
-        raise NotImplementedError("TO DO")
+        if self._use_sim:
+            from so101_sim import SO101Sim
+
+            robot = SO101Sim()
+            robot.connect()
+            return robot
+
+        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+
+        config = SO101FollowerConfig(
+            port=port,
+            id=CALIBRATION_FILE.stem,
+            calibration_dir=CALIBRATION_FILE.parent,
+        )
+        robot = SO101Follower(config)
+        # calibrate=True would block on input() if the motors disagree with the file.
+        robot.connect(calibrate=False)
+        if not robot.is_calibrated:
+            if not robot.calibration:
+                robot.disconnect()
+                raise RuntimeError(f"No calibration found at {CALIBRATION_FILE}, check CALIBRATION_FILE in docker/.env")
+            robot.bus.write_calibration(robot.calibration)
+        self.get_logger().info("Arm connected.")
+        return robot
 
     def destroy_node(self):
-        # TODO: disconnect the backend
+        if self._robot is not None and self._robot.is_connected:
+            self._robot.disconnect()
+            self.get_logger().info("Arm disconnected.")
         super().destroy_node()
 
     def _cb_joint_command(self, msg: JointState):
-        raise NotImplementedError("TO DO")
+        if len(msg.name) != len(msg.position):
+            self.get_logger().warn("/joint_command: name and position sizes differ, ignored")
+            return
+        for name, value in zip(msg.name, msg.position):
+            if name not in self._target:
+                self.get_logger().warn(f"/joint_command: unknown joint '{name}'", throttle_duration_sec=2.0)
+                continue
+            self._target[name] = _clamp(name, value)
 
     def _control_step(self):
-        raise NotImplementedError("TO DO")
+        try:
+            self._robot.send_action({f"{name}.pos": value for name, value in self._target.items()})
+            self._obs = self._robot.get_observation()
+        except Exception as e:
+            self.get_logger().error(f"Backend error: {e}", throttle_duration_sec=1.0)
 
     def _publish_joint_states(self):
-        raise NotImplementedError("TO DO")
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = JOINT_NAMES
+        msg.position = [float(self._obs[f"{name}.pos"]) for name in JOINT_NAMES[:-1]]
+        msg.position.append(_gripper_pct_to_rad(self._obs["gripper.pos"]))
+        self._joint_state_pub.publish(msg)
+
+    def _make_camera_info(self) -> CameraInfo:
+        K = self._robot.get_camera_intrinsics()
+        info = CameraInfo()
+        info.header.frame_id = CAMERA_FRAME
+        info.width = self._robot.camera_width
+        info.height = self._robot.camera_height
+        info.distortion_model = "plumb_bob"
+        info.d = [0.0] * 5
+        info.k = K.flatten().tolist()
+        info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        info.p = [K[0, 0], 0.0, K[0, 2], 0.0, 0.0, K[1, 1], K[1, 2], 0.0, 0.0, 0.0, 1.0, 0.0]
+        return info
+
+    def _publish_camera(self):
+        img = self._bridge.cv2_to_imgmsg(self._robot.render_camera(), encoding="rgb8")
+        img.header.stamp = self.get_clock().now().to_msg()
+        img.header.frame_id = CAMERA_FRAME
+        self._camera_info.header.stamp = img.header.stamp
+        self._image_pub.publish(img)
+        self._camera_info_pub.publish(self._camera_info)
 
 
 def main(args=None):
