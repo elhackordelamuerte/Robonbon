@@ -1,7 +1,7 @@
 # Launch:
 #   xhost +local:docker            # once per session (X11 access)
 #   cp .env.example .env           # once, then edit it (sim or real arm)
-#   docker compose up -d control viz
+#   docker compose up -d control perception viz
 #
 # RViz runs INSIDE the control container (X11 forwarded), so on the internal
 # DDS network - no need for --network host:
@@ -45,6 +45,20 @@ services:
     # Only container that builds (concurrent colcon on the same volume = conflicts).
     # viz waits for install/ to be ready.
     command: ["/opt/so101/entrypoint.sh"]
+
+  # Doesn't build: uses the install/ produced by control.
+  perception:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.perception
+    image: tek5/perception
+    init: true
+    environment: *ros-env
+    volumes:
+      - ../ros2_ws:/ros2_ws
+    networks: [rosnet]
+    stdin_open: true
+    tty: true
 
   # robot_state_publisher: publishes /robot_description and the TFs from
   # /joint_states (provided by your driver_node). Visualization is done
