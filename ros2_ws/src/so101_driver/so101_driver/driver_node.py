@@ -10,8 +10,10 @@ from pathlib import Path
 import rclpy
 import rclpy.node
 from cv_bridge import CvBridge
+from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import CameraInfo, Image, JointState
+from so101_sim import SO101Sim
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -67,6 +69,7 @@ class DriverNode(rclpy.node.Node):
         self.get_logger().info(f"Mode: {mode} (port={port})")
 
         self._robot = self._connect_arm(port)
+        self.get_logger().info(f"Robot connected: {type(self._robot).__name__}")
 
         # Hold the current pose until the first command, instead of jumping to 0.
         self._obs = self._robot.get_observation()
@@ -86,30 +89,31 @@ class DriverNode(rclpy.node.Node):
 
         self.get_logger().info("Driver node ready.")
 
-    def _connect_arm(self, port: str = DEFAULT_PORT):
+    def _connect_arm(self, port: str = DEFAULT_PORT) -> SO101Sim | SO101Follower:
+        """Creates and connects the backend chosen by use_sim (provided)."""
         if self._use_sim:
-            from so101_sim import SO101Sim
-
             robot = SO101Sim()
             robot.connect()
             return robot
 
-        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-
+        if not CALIBRATION_FILE.is_file():
+            raise RuntimeError(
+                f"No calibration file at {CALIBRATION_FILE}: set CALIBRATION_FILE in docker/.env"
+            )
         config = SO101FollowerConfig(
             port=port,
             id=CALIBRATION_FILE.stem,
             calibration_dir=CALIBRATION_FILE.parent,
+            use_radians=True,
         )
         robot = SO101Follower(config)
-        # calibrate=True would block on input() if the motors disagree with the file.
         robot.connect(calibrate=False)
         if not robot.is_calibrated:
-            if not robot.calibration:
-                robot.disconnect()
-                raise RuntimeError(f"No calibration found at {CALIBRATION_FILE}, check CALIBRATION_FILE in docker/.env")
-            robot.bus.write_calibration(robot.calibration)
-        self.get_logger().info("Arm connected.")
+            robot.disconnect()
+            raise RuntimeError(
+                f"{CALIBRATION_FILE} does not match the motors: wrong file for this arm? "
+                "Re-run lerobot-calibrate on the host."
+            )
         return robot
 
     def destroy_node(self):
