@@ -4,3 +4,5 @@ Simulation, IK, perception and pick & place on the SO-ARM101 arm, with ROS2 and 
 
 - Project spec: [`docs/SUJET.md`](docs/SUJET.md)
 - Setup and first steps: see the bootstrap slides.
+- macOS setup (RViz in the browser): [`docs/SETUP_MAC.md`](docs/SETUP_MAC.md)
+- Journal de résolution (étapes, problèmes, solutions) : [`docs/JOURNAL.md`](docs/JOURNAL.md)
