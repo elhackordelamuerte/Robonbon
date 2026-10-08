@@ -70,11 +70,15 @@ class BrainNode(rclpy.node.Node):
     def __init__(self):
         super().__init__("so101_brain")
         self.declare_parameter("hover_z", 0.10)  # TCP height above the object before descending
-        self.declare_parameter("grasp_z", 0.02)  # TCP height when closing (cube center ~0.025)
+        self.declare_parameter("grasp_z", 0.015)  # TCP height when closing, jaw deep in the hole
         self.declare_parameter("release_z", 0.13)  # TCP height above the box when opening
-        self.declare_parameter("gripper_open", 60.0)
-        # The fixed jaw is off the TCP axis: without this, closing drags the cube ~2 cm.
-        self.declare_parameter("jaw_offset", -0.0185)
+        # The moving jaw goes into the top hole of the cube, the fixed one slides
+        # along the outer face. At this opening the moving jaw tip is at
+        # (tip_x, tip_y) in the TCP frame (measured on the MuJoCo meshes), and
+        # the fixed jaw is ~5 mm away from the face.
+        self.declare_parameter("gripper_open", 16.0)
+        self.declare_parameter("tip_x", -0.0303)
+        self.declare_parameter("tip_y", 0.00015)
 
         urdf = Path(get_package_share_directory("so101_description")) / "urdf" / "so101.urdf"
         self._arm = Arm(str(urdf))
@@ -219,23 +223,26 @@ class BrainNode(rclpy.node.Node):
         grasp_z = self.get_parameter("grasp_z").value
         release_z = self.get_parameter("release_z").value
         opened = self.get_parameter("gripper_open").value
-        jaw_offset = self.get_parameter("jaw_offset").value
+        tip_x = self.get_parameter("tip_x").value
+        tip_y = self.get_parameter("tip_y").value
 
-        # The cube is invariant under 90° rotations: keep the jaw yaw that needs the least wrist roll.
-        grasp = np.array([obj.position.x, obj.position.y, grasp_z])
+        # The cube is invariant under 90° rotations: try the 4 sides for the fixed
+        # jaw, keep the one that needs the least wrist roll.
+        center = np.array([obj.position.x, obj.position.y])
         cube_yaw = _yaw(obj.orientation) % (math.pi / 2)
         candidates = []
         for k in range(4):
             yaw = cube_yaw + k * math.pi / 2
+            jaw_axis = np.array([math.cos(yaw), math.sin(yaw)])  # TCP X, top-down
+            side_axis = np.array([math.sin(yaw), -math.cos(yaw)])  # TCP Y
+            xy = center - tip_x * jaw_axis - tip_y * side_axis  # moving jaw tip over the hole
+            grasp = np.array([xy[0], xy[1], grasp_z])
             q, err, tilt = self._arm.ik_grasp(grasp, yaw, seed=q_start)
             if err < 0.002 and tilt < 5.0:
-                candidates.append((abs(q[4]), yaw, q))
+                candidates.append((abs(q[4]), yaw, grasp, q))
         if not candidates:
-            raise RuntimeError(f"no top-down grasp at ({grasp[0]:.3f}, {grasp[1]:.3f})")
-        _, yaw, q_grasp = min(candidates, key=lambda c: c[0])
-
-        R = self._arm.fk(q_grasp)[:3, :3]
-        grasp[:2] += (R @ [jaw_offset, 0.0, 0.0])[:2]
+            raise RuntimeError(f"no top-down grasp at ({center[0]:.3f}, {center[1]:.3f})")
+        _, yaw, grasp, q_grasp = min(candidates, key=lambda c: c[0])
         above = np.array([grasp[0], grasp[1], hover_z])
         q_above, err, tilt = self._arm.ik_grasp(above, yaw, seed=q_grasp)
         if err > 0.002:
@@ -254,8 +261,8 @@ class BrainNode(rclpy.node.Node):
 
         self.get_logger().info(f"pick & place: planned, jaw yaw {math.degrees(yaw):.0f} deg, hover tilt {tilt:.0f} deg")
         return [
-            ("open gripper", "move", q_start, opened, T_GRIPPER),
-            ("move above object", "move", q_above, None, T_MOVE),
+            ("move above object", "move", q_above, GRIPPER_CLOSED, T_MOVE),
+            ("open gripper", "move", q_above, opened, T_GRIPPER),
             ("align", "wait", None, None, 0.5),
             ("descend", "path", down, None, T_DESCEND),
             ("close gripper", "move", down[-1], GRIPPER_CLOSED, T_GRIPPER),
