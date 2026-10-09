@@ -10,6 +10,8 @@ Never talks to the backend: reads /joint_states, commands through /joint_command
                         (/drop_box_position), go back to rest
   /go_to_rest           move the arm to its rest pose
 """
+import copy
+import json
 import math
 import threading
 from collections import deque
@@ -61,6 +63,7 @@ T_SEAT = 1.5
 T_LIFT = 3.0
 T_LOWER = 1.5
 T_GRIPPER = 1.0
+T_CHECK = 0.8  # arm still after the lift before the grasp check (camera image settles)
 
 
 def _yaw(q) -> float:
@@ -95,6 +98,17 @@ class BrainNode(rclpy.node.Node):
         # Set to false on the real arm if it must not move by itself at startup.
         self.declare_parameter("rest_on_start", True)
         self._rest_pending = self.get_parameter("rest_on_start").value
+        # Grasp check after the lift (perception: is the cube stuck to the gripper?) and retries:
+        # each failed attempt shifts the target by one rectification step (search pattern around
+        # the perceived position); the offset that works is kept for the next picks.
+        self.declare_parameter("verify_grasp", True)
+        self.declare_parameter("max_grasp_attempts", 6)
+        self.declare_parameter("rectification_step", 0.005)  # m
+        self._attempt = 0
+        self._learned_offset = np.zeros(2)  # offset of the last successful grasp (m, base_link)
+        self._attempt_offset = np.zeros(2)
+        self._check_future = None
+        self._verify_client = self.create_client(Trigger, "/perception/verifier_prise")
 
         urdf = Path(get_package_share_directory("so101_description")) / "urdf" / "so101.urdf"
         self._arm = Arm(str(urdf))
@@ -228,11 +242,68 @@ class BrainNode(rclpy.node.Node):
             response.message = (f"/object_position is {self._object_age():.0f} s old: "
                                 "object not seen anymore (perception stopped, cube hidden or out of view?)")
         else:
-            obj, box = self._object.pose, self._box.pose
+            self._attempt = 0
+            obj, box = self._shifted_object(), self._box.pose
             self._start(self._plan_pick_and_place, obj, box)
             response.success = True
             response.message = f"object at ({obj.position.x:.3f}, {obj.position.y:.3f}), planning"
         return response
+
+    # ------------------------------------------------- grasp check & retries
+
+    def _search_offset(self, attempt: int) -> np.ndarray:
+        """Search pattern in rectification steps: (0,0), then rings (0,-r), (0,r), (r,0), (-r,0)."""
+        if attempt == 0:
+            return np.zeros(2)
+        ring, k = (attempt - 1) // 4 + 1, (attempt - 1) % 4
+        return ring * np.array([(0, -1), (0, 1), (1, 0), (-1, 0)][k], float)
+
+    def _shifted_object(self):
+        """Last /object_position + learned offset + search offset of the current attempt."""
+        step = self.get_parameter("rectification_step").value
+        self._attempt_offset = self._learned_offset + step * self._search_offset(self._attempt)
+        obj = copy.deepcopy(self._object.pose)
+        obj.position.x += float(self._attempt_offset[0])
+        obj.position.y += float(self._attempt_offset[1])
+        return obj
+
+    def _grasp_check_result(self) -> bool | None:
+        """None while waiting; True/False once the perception answered (True if it cannot tell)."""
+        if self._check_future is None:
+            if not self._verify_client.service_is_ready():
+                self.get_logger().warn("pick & place: /perception/verifier_prise unavailable, grasp not checked")
+                return True
+            self._check_future = self._verify_client.call_async(Trigger.Request())
+            return None
+        if not self._check_future.done():
+            return None
+        result, self._check_future = self._check_future.result(), None
+        details = json.loads(result.message) if result.message.startswith("{") else {}
+        if details.get("verdict") == "indeterminé":
+            self.get_logger().warn(f"pick & place: grasp check inconclusive ({details.get('raison')}), continuing")
+            return True
+        self.get_logger().info(f"pick & place: grasp {'OK' if result.success else 'FAILED'} "
+                               f"(cube {details.get('distance_px', '?')} px from the gripper)")
+        return result.success
+
+    def _retry_grasp(self):
+        """After a failed grasp (gripper reopened): replan on the fresh cube position, next search offset."""
+        self._attempt += 1
+        if self._attempt >= self.get_parameter("max_grasp_attempts").value:
+            self.get_logger().error(f"pick & place: grasp failed after {self._attempt} attempts, giving up")
+            self._steps, self._busy = None, False
+            self._start(self._plan_rest)
+            return
+        if self._object is None or self._object_age() > OBJECT_MAX_AGE:
+            self.get_logger().error("pick & place: cube not seen anymore after the failed grasp, giving up")
+            self._steps, self._busy = None, False
+            self._start(self._plan_rest)
+            return
+        obj = self._shifted_object()
+        self.get_logger().info(f"pick & place: retry {self._attempt + 1}, target offset "
+                               f"({self._attempt_offset[0] * 1000:+.0f}, {self._attempt_offset[1] * 1000:+.0f}) mm")
+        self._steps = None
+        self._start(self._plan_pick_and_place, obj, self._box.pose)
 
     def _srv_go_to_rest(self, request, response):
         if self._busy or self._q is None:
@@ -356,6 +427,7 @@ class BrainNode(rclpy.node.Node):
             ("close gripper", "move", seat[-1], GRIPPER_CLOSED, T_GRIPPER),
             ("hold", "wait", None, None, 0.5),
             ("lift", "path", lift, None, T_LIFT),
+            *([("verify grasp", "check", None, None, T_CHECK)] if self.get_parameter("verify_grasp").value else []),
             ("move above box", "path", transfer, None, T_TRAVEL),
             ("lower", "path", lower, None, T_LOWER),
             ("release", "move", lower[-1], opened, T_GRIPPER),
@@ -378,6 +450,25 @@ class BrainNode(rclpy.node.Node):
             self.get_logger().info(f"pick & place: {self._step[0]}")
 
         name, kind, target, gripper, duration = self._step
+        if kind == "check":
+            self._send_joint_command(self._cmd_q, self._cmd_gripper)  # hold still
+            if now - self._t0 < duration:
+                return
+            ok = self._grasp_check_result()
+            if ok is None:
+                return
+            self._step = None
+            if ok:
+                self._learned_offset = self._attempt_offset.copy()
+                return
+            opened = self.get_parameter("gripper_open").value
+            self._steps = deque([("reopen gripper", "move", self._cmd_q, opened, T_GRIPPER),
+                                 ("retry", "retry", None, None, 0.1)])
+            return
+        if kind == "retry":
+            self._step = None
+            self._retry_grasp()
+            return
         s = (now - self._t0) / duration
         e = _ease(s)
         q, g = self._q0, self._g0

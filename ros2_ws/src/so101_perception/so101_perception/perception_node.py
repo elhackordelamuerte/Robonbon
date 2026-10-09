@@ -21,6 +21,7 @@ Paramètres : camera_ns, cam_T, cam_T_file (YAML de scripts/calibrate_pose.py), 
 de cv2.solvePnP, déjà en convention OpenCV), hsv_rouge (12 entiers = 2 plages min/max),
 detecter_boite, boite_fixe ([x, y] publié si detecter_boite est faux), detecter_bol, hsv_bol, z_plan_bol, aire_min_cube_px.
 """
+import json
 import math
 import threading
 from pathlib import Path
@@ -34,6 +35,7 @@ from geometry_msgs.msg import PoseStamped
 from rcl_interfaces.srv import GetParameters
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import CameraInfo, Image
+from std_srvs.srv import Trigger
 
 # -- Seuils HSV (OpenCV : H 0-180) ---------------------------------------------
 # Cube rouge : le rouge chevauche 0°/180°. V >= 100 exclut le marron de la boîte (V ~ 73).
@@ -53,6 +55,13 @@ AIRE_MIN_BOL_PX = 300
 PORTEE_BOL_M = (0.08, 0.45)  # rejette le fond de la salle (projeté à plusieurs mètres)
 LISSAGE_BOL = 0.3  # filtre exponentiel sur la position du bol
 PORTEE_CUBE_M = (0.05, 0.45)  # cube : distance à la base du bras plausible
+# Vérification de prise : cube « dans la pince » si son centre est à moins de SEUIL px du segment
+# projeté [TCP, TCP - DESCENTE_CUBE_M en z] (le cube pend sous la pointe des mâchoires).
+SEUIL_PRISE_PX = 35.0
+DESCENTE_CUBE_M = 0.04
+# … et aucun cube encore posé sur la table à moins de RAYON_TABLE_M de la verticale de la pince
+# (évite le faux positif d'un cube resté au sol qui, en perspective, apparaît juste sous la pince levée).
+RAYON_TABLE_M = 0.06
 AIRE_MIN_CUBE_PX = 40
 AIRE_MIN_BOITE_PX = 60
 MARGE_BORD_PX = 2  # contour touchant le bord = objet coupé -> ignoré
@@ -164,6 +173,11 @@ class PerceptionNode(rclpy.node.Node):
         self._pub_objet = self.create_publisher(PoseStamped, "/object_position", 10)
         self._pub_boite = self.create_publisher(PoseStamped, "/drop_box_position", 10)
         self._pub_debug = self.create_publisher(Image, "/perception/debug", 1)
+        # Vérification de prise (appelée par le brain bras levé) : le cube est-il collé à la pince ?
+        self._derniere_image: np.ndarray | None = None
+        self._pince: np.ndarray | None = None  # position mesurée du TCP (repère robot)
+        self.create_subscription(PoseStamped, "/end_effector_pose", self._cb_pince, 10)
+        self.create_service(Trigger, "/perception/verifier_prise", self._srv_verifier_prise)
         self._client_param = self.create_client(GetParameters, f"{NOEUD_DRIVER}/get_parameters")
         self.create_timer(PERIODE_RECHERCHE_T_S, self._fetch_cam_params)
 
@@ -204,6 +218,7 @@ class PerceptionNode(rclpy.node.Node):
         if self._K_inv is None:
             return
         image = image_vers_numpy(msg)
+        self._derniere_image = image
         debug = image.copy()
         contour = self._detect_object_2d(image, debug)
         if self._T is None:  # mode 2D : pas de pose caméra, pas de position 3D
@@ -271,6 +286,55 @@ class PerceptionNode(rclpy.node.Node):
         (x, y), _, _ = cv2.minAreaRect(points)
         cv2.drawContours(debug, [contour], -1, (0, 160, 255), 1)
         return np.array([x, y, 0.0]), cv2.contourArea(contour)
+
+    def _cb_pince(self, msg: PoseStamped):
+        p = msg.pose.position
+        self._pince = np.array([p.x, p.y, p.z])
+
+    def _projeter(self, point_robot: np.ndarray) -> np.ndarray | None:
+        """Pixel (u, v) d'un point 3D du repère robot, ou None s'il est derrière la caméra."""
+        p_cam = self._flip @ (self._T[:3, :3].T @ (point_robot - self._T[:3, 3]))
+        if p_cam[2] <= 0:
+            return None
+        uv = np.linalg.inv(self._K_inv) @ p_cam
+        return uv[:2] / uv[2]
+
+    def _srv_verifier_prise(self, request, response):
+        """Bras levé : le cube rouge est-il collé à la pince dans l'image ? (succès = prise réussie)."""
+        if self._derniere_image is None or self._T is None or self._pince is None:
+            response.success = False
+            response.message = json.dumps({"verdict": "indeterminé", "raison": "pas d'image, de pose caméra ou de pose pince"})
+            return response
+        a = self._projeter(self._pince)
+        b = self._projeter(self._pince - np.array([0.0, 0.0, DESCENTE_CUBE_M]))
+        hsv = cv2.cvtColor(self._derniere_image, cv2.COLOR_RGB2HSV)
+        contours, _ = cv2.findContours(masque_hsv(hsv, self._plages_rouge), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        meilleure = None
+        for contour in contours:
+            if cv2.contourArea(contour) < self._aire_min_cube / 2 or a is None or b is None:
+                continue  # cube vu par en dessous / partiellement masqué par les mâchoires : seuil réduit
+            c = np.array(centre(contour))
+            t = np.clip(np.dot(c - a, b - a) / max(np.dot(b - a, b - a), 1e-9), 0.0, 1.0)
+            d = float(np.linalg.norm(c - (a + t * (b - a))))
+            if meilleure is None or d < meilleure[0]:
+                meilleure = (d, c)
+        # Cube toujours posé sur la table sous la pince ? (projection sur le plan de la table)
+        au_sol = self._contour_cube(masque_hsv(hsv, self._plages_rouge))
+        ecart_sol = None
+        if au_sol is not None:
+            ecart_sol = float(np.linalg.norm(self._project_to_3d(*centre(au_sol), Z_PLAN_CUBE)[:2] - self._pince[:2]))
+        if meilleure is None:
+            verdict, details = False, {"raison": "aucun cube rouge visible"}
+        else:
+            verdict = meilleure[0] < SEUIL_PRISE_PX and (ecart_sol is None or ecart_sol > RAYON_TABLE_M)
+            details = {"distance_px": round(meilleure[0], 1), "seuil_px": SEUIL_PRISE_PX,
+                       "pince_px": [round(float(v)) for v in a], "cube_px": [round(float(v)) for v in meilleure[1]]}
+            if ecart_sol is not None and ecart_sol <= RAYON_TABLE_M:
+                details["raison"] = f"cube encore sur la table à {ecart_sol * 100:.1f} cm sous la pince"
+        details = {"verdict": "réussie" if verdict else "ratée", "pince_m": [round(float(v), 3) for v in self._pince], **details}
+        self.get_logger().info(f"vérification de prise : {details}")
+        response.success, response.message = bool(verdict), json.dumps(details, ensure_ascii=False)
+        return response
 
     def _detect_bowl(self, image: np.ndarray, debug: np.ndarray) -> None:
         """Bol en bois : plus grand contour « bois » à portée du bras -> zone de dépôt (lissée)."""
