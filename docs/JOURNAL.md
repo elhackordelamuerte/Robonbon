@@ -27,6 +27,7 @@ Sommaire :
 20. [Épaule qui cale sous la gravité + pose caméra multi-marqueurs](#étape-20--épaule-qui-cale-sous-la-gravité--pose-caméra-multi-marqueurs)
 21. [Pipeline automatique : zone délimitée par 4 ArUco avant le grab](#étape-21--pipeline-automatique--zone-délimitée-par-4-aruco-avant-le-grab)
 22. [Retour à l'état d'avant les 4 ArUco de cartographie](#étape-22--retour-à-létat-davant-les-4-aruco-de-cartographie)
+23. [Vérification de la prise par la caméra et relance automatique](#étape-23--vérification-de-la-prise-par-la-caméra-et-relance-automatique)
 
 ---
 
@@ -769,3 +770,57 @@ on /camera`, plus de service `analyser_zone` ; panneau HTTP 200 ; `node --check`
 
 **À refaire :** la caméra ayant été déplacée, `ros2_ws/calib/camera_pose.yaml` n'existe plus (la perception est en 2D) :
 relancer `uv run scripts/calibrate_pose.py --x … --y … --yaw-deg … --marqueur-mm 80` avec un marqueur posé et mesuré.
+
+---
+
+## Étape 23 — Vérification de la prise par la caméra et relance automatique
+
+**Contexte (grabs réels après l'étape 22) :** recalibration de pose avec un seul marqueur (orientation -90° confirmée en
+projetant la base du bras), filtre de portée du cube remis, caméra déplacée une nouvelle fois puis recalibrée.
+`calibrate_pose.py` conserve désormais `correction_objet`. Prise latérale réglée à chaud sur le brain (`gripper_open` 70 %,
+`tip_x`/`tip_y` 0, `grasp_z` 2,5 cm, `seat_z` 4,5 cm, via `SetParameters`, la CLI étant trop lente) et correction
+`correction_objet: [0, -0.025]` (pince 2-3 cm à gauche du cube d'après l'utilisateur). Les grabs s'exécutent en entier
+mais **sans saisir le cube**. Les photos automatiques des étapes (descente, assise, fermeture, levée) montrent la pince
+restée au-dessus et en arrière du cube.
+
+**Fonctionnalité demandée :** après chaque grab, le bras levé, la perception vérifie si le cube est dans la pince ; sinon,
+nouvel essai avec une rectification de 0,5 (interprétée comme un pas de **0,5 cm**, réglable).
+
+**Perception — service `/perception/verifier_prise`** (Trigger, réponse JSON) :
+- position **mesurée** de la pince via `/end_effector_pose` (FK du brain sur `/joint_states` : affaissement compris) ;
+- projection dans l'image du segment [TCP, TCP − 4 cm en z] (le cube pend sous la pointe des mâchoires) ;
+- plus petite distance entre ce segment et le centre d'un contour rouge (seuil d'aire divisé par 2 : cube en partie masqué
+  par les mâchoires) ; **réussie** si elle est inférieure à 35 px, ratée sinon ; « indéterminé » sans image ou sans pose.
+
+**Brain — étape `verify grasp` après `lift`** (paramètre `verify_grasp`, vrai par défaut) :
+- bras immobile 0,8 s (`T_CHECK`), puis appel asynchrone au service : le timer à 50 Hz n'est jamais bloqué ;
+- **réussie** : la séquence continue (transport, dépôt) et le décalage utilisé est **retenu** pour les grabs suivants ;
+- **ratée** : réouverture de la pince, puis **nouvelle planification** sur la position fraîche du cube + décalage de
+  recherche suivant : (0, 0), puis des anneaux de `rectification_step` (0,005 m) : (0, −r), (0, +r), (+r, 0), (−r, 0)… ;
+- arrêt après `max_grasp_attempts` (6) essais, ou si le cube n'est plus vu (> 2 s) → retour au repos ;
+- service indisponible ou verdict indéterminé : la séquence continue, avec un avertissement (pas de boucle infinie).
+
+**Déploiement sans couper le bras :** `colcon build` des deux paquets dans `control`, puis relance du **seul processus du
+brain** (`docker exec -d … ros2 launch so101_brain brain.launch.py rest_on_start:=false`) ; le driver garde le couple.
+Piège : un premier `pkill -f "so101_brain brain.launch.py"` avait aussi tué le shell qui contenait cette chaîne.
+
+**Vérification :** bras au repos, cube sur la table → `{"verdict": "ratée", "pince_px": [387, 74], "cube_px": [382, 199],
+"distance_px": 86.1}` ✅ (bon verdict négatif).
+
+**Premier pick & place réel réussi (cycle complet de relance)** — cube vu en (0,168 ; 0,012) m, bol en (0,183 ; -0,178) m :
+
+| Essai | Décalage de la cible | Pince (mesurée) | Vérification |
+|---|---|---|---|
+| 1 | (0, 0) | (0,141 ; 0,024 ; 0,148) | ❌ ratée : cube à 72,2 px, resté sur la table |
+| 2 | (0 ; −5 mm) | (0,147 ; 0,034 ; 0,143) | ❌ ratée : 72,9 px |
+| 3 | **(0 ; +5 mm)** | (0,159 ; 0,049 ; 0,141) | ✅ **réussie : 16,9 px**, cube soulevé (pixel 362, 93, contre 89 pour la pince) |
+
+Après la réussite : transport au-dessus du bol, descente, lâcher, retour au repos. Le cube est visible **dans le bol** sur
+l'image. Le décalage gagnant (+5 mm en y) est mémorisé (`_learned_offset`) pour les grabs suivants.
+
+**Faux positif (grab lancé depuis le panneau) :** `grasp OK (cube 32.2 px from the gripper)`, juste sous le seuil de 35 px,
+alors que le cube était resté sur la table : en perspective, un cube au sol peut apparaître juste sous la pince levée.
+Le bras est allé déposer une pince vide. Le panneau n'y est pour rien (même service).
+→ second critère : un cube **encore posé sur la table à moins de 6 cm de la verticale de la pince** (`RAYON_TABLE_M`,
+contour à portée projeté sur le plan de la table) rend la prise **ratée**, quelle que soit la distance dans l'image. Un cube
+réellement tenu (≈ 14 cm de haut) se projette à ≈ 27 cm de cette verticale avec la caméra actuelle, donc reste validé.
