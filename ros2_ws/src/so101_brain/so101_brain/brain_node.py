@@ -41,11 +41,15 @@ GRIPPER_RANGE_RAD = (-0.174533, 1.74533)  # 0 % .. 100 %
 BASE_FRAME = "base_link"
 ACCEPTED_FRAMES = ("", "world", BASE_FRAME)  # world == base_link (static identity TF)
 IK_MAX_ERROR = 0.01  # m
+# A pick never starts on an old object position (e.g. perception stopped or lost the cube).
+OBJECT_MAX_AGE = 2.0  # s
 
 POSE_HZ = 10.0
 TASK_HZ = 50.0
 
-READY = np.array([0.20, 0.0, 0.17])  # TCP rest position between two picks
+# TCP rest position between two picks. Offset in y so that the arm at rest does not
+# hide the drop box from the external camera (the camera -> box ray passes ~(0.20, 0.01, 0.22)).
+READY = np.array([0.18, 0.10, 0.17])
 GRIPPER_CLOSED = 0.0
 PATH_STEP = 0.01  # m between two IK waypoints on straight-line moves
 
@@ -98,6 +102,7 @@ class BrainNode(rclpy.node.Node):
         self._q = None  # measured arm joints (rad)
         self._gripper = 0.0  # measured gripper (%)
         self._object = None  # last /object_position
+        self._object_time = None  # reception time of self._object
         self._box = None  # last /drop_box_position
 
         self._steps = None  # pick & place steps being executed
@@ -133,6 +138,11 @@ class BrainNode(rclpy.node.Node):
 
     def _cb_object(self, msg: PoseStamped):
         self._object = msg
+        self._object_time = self.get_clock().now()
+
+    def _object_age(self) -> float:
+        """Seconds since the last /object_position (reception time: stamps may come from another clock)."""
+        return (self.get_clock().now() - self._object_time).nanoseconds * 1e-9
 
     def _cb_box(self, msg: PoseStamped):
         self._box = msg
@@ -213,6 +223,10 @@ class BrainNode(rclpy.node.Node):
         elif self._q is None or self._object is None or self._box is None:
             response.success = False
             response.message = "waiting for /joint_states, /object_position and /drop_box_position"
+        elif self._object_age() > OBJECT_MAX_AGE:
+            response.success = False
+            response.message = (f"/object_position is {self._object_age():.0f} s old: "
+                                "object not seen anymore (perception stopped, cube hidden or out of view?)")
         else:
             obj, box = self._object.pose, self._box.pose
             self._start(self._plan_pick_and_place, obj, box)

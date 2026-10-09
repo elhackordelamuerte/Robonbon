@@ -25,8 +25,22 @@ for i in 0 1 2 3; do
   [ -e /dev/ttyUSB$i ] || mknod /dev/ttyUSB$i c 188 $i 2>/dev/null && chmod 666 /dev/ttyUSB$i 2>/dev/null || true
 done
 
+# Real arm through a TCP bridge (Docker Desktop on macOS has no USB passthrough):
+# scripts/serial_bridge.py relays the USB port on the host, socat recreates a serial port here.
+if [ "${USE_SIM:-true}" = "false" ] && [ -n "${SERIAL_BRIDGE:-}" ]; then
+  BRIDGE_PORT=/dev/ttyBRIDGE
+  ( while true; do
+      socat "pty,link=$BRIDGE_PORT,raw,echo=0" "$SERIAL_BRIDGE" \
+        || echo "serial bridge $SERIAL_BRIDGE unreachable: is scripts/serial_bridge.py running on the host? retrying..."
+      sleep 2
+    done ) &
+  for _ in $(seq 1 50); do [ -e "$BRIDGE_PORT" ] && break; sleep 0.1; done
+  REAL_ROBOT_PORT=$BRIDGE_PORT
+fi
+
 launch so101_driver driver.launch.py "use_sim:=${USE_SIM:-true}" "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}"
-launch so101_brain brain.launch.py
+# Real arm: never move by itself at startup (the brain's slow move to rest stays sim-only).
+launch so101_brain brain.launch.py "rest_on_start:=${USE_SIM:-true}"
 
 shutdown() {
   trap - TERM INT
