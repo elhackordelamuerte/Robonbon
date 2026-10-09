@@ -27,6 +27,11 @@ COPY sim /opt/so101/sim
 RUN pip install --break-system-packages --no-cache-dir \
     "numpy<2" "opencv-python-headless==4.10.*" /opt/so101/core /opt/so101/sim ikpy
 
+# socat: virtual serial port bridged over TCP to the host (real arm with Docker Desktop
+# on macOS, which has no USB passthrough). Separate layer to keep the cache above.
+RUN apt-get update && apt-get install -y --no-install-recommends socat \
+    && rm -rf /var/lib/apt/lists/*
+
 # ROS2 workspace mounted as a volume (see docker-compose.yml)
 WORKDIR /ros2_ws
 

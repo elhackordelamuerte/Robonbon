@@ -26,7 +26,13 @@ services:
     environment:
       <<: *ros-env
       USE_SIM: ${USE_SIM:-true}
+      # Serial port as seen INSIDE the container (Linux host: /dev/ttyACM0).
+      # Not the macOS port (/dev/tty.usbmodem…): Docker Desktop has no USB passthrough, the Mac
+      # port goes to scripts/serial_bridge.py and, with SERIAL_BRIDGE set, the entrypoint
+      # replaces this value with /dev/ttyBRIDGE (socat). See docs/BRAS_REEL.md.
       REAL_ROBOT_PORT: ${REAL_ROBOT_PORT:-/dev/ttyACM0}
+      # macOS: real arm through scripts/serial_bridge.py (e.g. tcp:host.docker.internal:8765)
+      SERIAL_BRIDGE: ${SERIAL_BRIDGE:-}
       MUJOCO_GL: osmesa
       DISPLAY: ${DISPLAY}
       QT_QPA_PLATFORM: xcb        # robust X11 and XWayland
@@ -59,6 +65,16 @@ services:
     networks: [rosnet]
     stdin_open: true
     tty: true
+    # CAMERA=sim (défaut) : caméra MuJoCo ; CAMERA=real : caméra réelle via camera_node.
+    # Sur macOS, la webcam est diffusée par l'hôte : uv run scripts/camera_stream.py --nom UGREEN
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      until [ -f /ros2_ws/install/so101_perception/share/so101_perception/launch/perception.launch.py ]; do echo 'waiting for build (control)...'; sleep 1; done &&
+      source /ros2_ws/install/setup.bash &&
+      ros2 launch so101_perception perception.launch.py camera:=${CAMERA:-sim}
+      source:=${CAMERA_SOURCE:-http://host.docker.internal:8081/stream.mjpg}
+      calibration_file:=${CAMERA_CALIBRATION:-/ros2_ws/calib/camera.yaml}
+      pose_file:=${CAMERA_POSE:-/ros2_ws/calib/camera_pose.yaml}"
 
   # robot_state_publisher: publishes /robot_description and the TFs from
   # /joint_states (provided by your driver_node). Visualization is done

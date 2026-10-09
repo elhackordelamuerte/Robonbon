@@ -1,0 +1,56 @@
+{
+  "poses": {
+    "repos": {
+      "shoulder_pan": 0,
+      "shoulder_lift": 0,
+      "elbow_flex": 0,
+      "wrist_flex": 0,
+      "wrist_roll": 0,
+      "gripper": 0
+    },
+    "lever": {
+      "shoulder_pan": 0,
+      "shoulder_lift": -0.8,
+      "elbow_flex": 0.6,
+      "wrist_flex": 0.8,
+      "wrist_roll": 0,
+      "gripper": 80
+    },
+    "gauche": {
+      "shoulder_pan": 0.9,
+      "shoulder_lift": -0.4,
+      "elbow_flex": 0.5,
+      "wrist_flex": 0.6,
+      "wrist_roll": 0.8,
+      "gripper": 20
+    },
+    "droite": {
+      "shoulder_pan": -0.9,
+      "shoulder_lift": -0.4,
+      "elbow_flex": 0.5,
+      "wrist_flex": 0.6,
+      "wrist_roll": -0.8,
+      "gripper": 80
+    }
+  },
+  "sequences": {
+    "démo": [
+      {
+        "pose": "lever",
+        "duree": 1.5
+      },
+      {
+        "pose": "gauche",
+        "duree": 1.5
+      },
+      {
+        "pose": "droite",
+        "duree": 2
+      },
+      {
+        "pose": "repos",
+        "duree": 1.5
+      }
+    ]
+  }
+}

@@ -68,6 +68,12 @@ class DriverNode(rclpy.node.Node):
         super().__init__("so101_driver")
         self._use_sim: bool = self.declare_parameter("use_sim", True).value
         port: str = self.declare_parameter("port", DEFAULT_PORT).value
+        # Real arm speed limit: max change of the SENT goal per control step (rate limiter on the
+        # command). At 50 Hz: 0.05 rad -> 2.5 rad/s, 2 % -> 100 %/s. Not LeRobot max_relative_target:
+        # it caps goal - PRESENT, and with the servos' low P gain a loaded joint (shoulder_lift)
+        # then stalls under gravity (measured: 27° short of its goal).
+        self._max_step_rad: float = self.declare_parameter("max_step_rad", 0.05).value
+        self._max_step_gripper: float = self.declare_parameter("max_step_gripper_pct", 2.0).value
         mode = "simulation" if self._use_sim else "hardware"
         self.get_logger().info(f"Mode: {mode} (port={port})")
 
@@ -77,6 +83,7 @@ class DriverNode(rclpy.node.Node):
         # Hold the current pose until the first command, instead of jumping to 0.
         self._obs = self._robot.get_observation()
         self._target = {name: self._obs[f"{name}.pos"] for name in JOINT_NAMES}
+        self._sent = dict(self._target)  # rate-limited goal actually sent to the real arm
 
         self._joint_state_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.create_subscription(JointState, "/joint_command", self._cb_joint_command, 10)
@@ -89,6 +96,9 @@ class DriverNode(rclpy.node.Node):
             self._camera_info_pub = self.create_publisher(CameraInfo, "/external_cam/camera_info", 10)
             self._camera_info = self._make_camera_info()
             self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
+            # Ground-truth camera -> world pose (4x4, row-major) for perception_node.
+            # Allowed to unblock the pipeline; to be replaced by your own calibration.
+            self.declare_parameter("cam_T", self._robot.get_camera_extrinsics().flatten().tolist())
 
             # Stand-in for perception_node while it doesn't exist: publishes the
             # ground truth from MuJoCo. Off by default, never use it for the evaluation.
@@ -125,12 +135,19 @@ class DriverNode(rclpy.node.Node):
                 f"{CALIBRATION_FILE} does not match the motors: wrong file for this arm? "
                 "Re-run lerobot-calibrate on the host."
             )
+        # Course repo default: torque disabled, the arm moves freely by hand ("Comment out
+        # this line to control the robot."). Commented out here: this driver controls the arm.
+        # robot.bus.disable_torque()
+        # self.get_logger().info(
+        #     "Torque disabled: arm can be moved freely by hand. Remove this part to control the arm."
+        # )
         return robot
 
     def destroy_node(self):
+        """Disconnects the backend (provided). On the real arm this disables the torque."""
         if self._robot is not None and self._robot.is_connected:
             self._robot.disconnect()
-            self.get_logger().info("Arm disconnected.")
+            self.get_logger().info("Robot disconnected.")
         super().destroy_node()
 
     def _cb_joint_command(self, msg: JointState):
@@ -143,9 +160,17 @@ class DriverNode(rclpy.node.Node):
                 continue
             self._target[name] = _clamp(name, value)
 
+    def _rate_limited_goal(self) -> dict:
+        """Moves the sent goal towards the target by at most max_step per control step (real arm)."""
+        for name, target in self._target.items():
+            step = self._max_step_gripper if name == "gripper" else self._max_step_rad
+            self._sent[name] += min(max(target - self._sent[name], -step), step)
+        return self._sent
+
     def _control_step(self):
+        goal = self._target if self._use_sim else self._rate_limited_goal()
         try:
-            self._robot.send_action({f"{name}.pos": value for name, value in self._target.items()})
+            self._robot.send_action({f"{name}.pos": value for name, value in goal.items()})
             self._obs = self._robot.get_observation()
         except Exception as e:
             self.get_logger().error(f"Backend error: {e}", throttle_duration_sec=1.0)
