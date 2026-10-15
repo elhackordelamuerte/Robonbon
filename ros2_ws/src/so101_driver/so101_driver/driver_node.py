@@ -6,8 +6,6 @@ The only node that talks to the backend: SO101Sim (MuJoCo) or SO101Follower
 knows which one runs.
 
 TODO:
-  - Connect the backend according to use_sim (real arm: `port` parameter and
-    the calibration file mounted at CALIBRATION_FILE, see docker/.env)
   - Publish /joint_states in RADIANS (>= 20 Hz)
   - Subscribe to /joint_command (radians, gripper 0-100 %)
   - Disconnect the backend when the node stops
@@ -16,8 +14,10 @@ from pathlib import Path
 
 import rclpy
 import rclpy.node
+from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
+from so101_sim import SO101Sim
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -41,7 +41,7 @@ JOINT_STATE_HZ = 30.0
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
-    raise NotImplementedError("TO DO")
+    return GRIPPER_RANGE_RAD[0] + (pct / 100.0) * (GRIPPER_RANGE_RAD[1] - GRIPPER_RANGE_RAD[0])
 
 
 class DriverNode(rclpy.node.Node):
@@ -54,25 +54,71 @@ class DriverNode(rclpy.node.Node):
         mode = "simulation" if self._use_sim else "hardware"
         self.get_logger().info(f"Mode: {mode} (port={port})")
 
-        # TODO: connect the backend, create the publishers, subscribers and timers.
+        self._robot = self._connect_arm(port)
+        self.get_logger().info(f"Robot connected: {type(self._robot).__name__}")
+
+        self._joint_state_pub = self.create_publisher(JointState, "/joint_states", 20)
+        self._joint_timer = self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
+
+        self._joint_command_sub = self.create_subscription(JointState, "/joint_command", self._cb_joint_command, 10)
+
+        # TODO: create the publishers, subscribers and timers.
 
         self.get_logger().info("Driver node ready.")
 
-    def _connect_arm(self, port: str = DEFAULT_PORT):
-        raise NotImplementedError("TO DO")
+    def _connect_arm(self, port: str = DEFAULT_PORT) -> SO101Sim | SO101Follower:
+        """Creates and connects the backend chosen by use_sim (provided)."""
+        if self._use_sim:
+            robot = SO101Sim()
+            robot.connect()
+            return robot
+
+        if not CALIBRATION_FILE.is_file():
+            raise RuntimeError(
+                f"No calibration file at {CALIBRATION_FILE}: set CALIBRATION_FILE in docker/.env"
+            )
+        config = SO101FollowerConfig(
+            port=port,
+            id=CALIBRATION_FILE.stem,
+            calibration_dir=CALIBRATION_FILE.parent,
+            use_radians=True,
+        )
+        robot = SO101Follower(config)
+        robot.connect(calibrate=False)
+        if not robot.is_calibrated:
+            robot.disconnect()
+            raise RuntimeError(
+                f"{CALIBRATION_FILE} does not match the motors: wrong file for this arm? "
+                "Re-run lerobot-calibrate on the host."
+            )
+        return robot
 
     def destroy_node(self):
         # TODO: disconnect the backend
         super().destroy_node()
+        self._robot.disconnect()
 
     def _cb_joint_command(self, msg: JointState):
-        raise NotImplementedError("TO DO")
+        self.steps.append(dict(zip(msg.name, msg.position)))
 
     def _control_step(self):
         raise NotImplementedError("TO DO")
 
     def _publish_joint_states(self):
-        raise NotImplementedError("TO DO")
+        joint_state_msg = JointState()
+        joint_state_msg.header.stamp = self.get_clock().now().to_msg()
+        joint_state_msg.name = JOINT_NAMES
+
+        observation = self._robot.get_observation()
+        joint_state_msg.position = []
+
+        for joint in JOINT_NAMES:
+            if joint == "gripper":
+                joint_state_msg.position.append(_gripper_pct_to_rad(observation[joint+".pos"]))
+            else:
+                joint_state_msg.position.append(observation[joint+".pos"])
+
+        self._joint_state_pub.publish(joint_state_msg)
 
 
 def main(args=None):
