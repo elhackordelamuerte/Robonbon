@@ -28,6 +28,7 @@ Sommaire :
 21. [Pipeline automatique : zone délimitée par 4 ArUco avant le grab](#étape-21--pipeline-automatique--zone-délimitée-par-4-aruco-avant-le-grab)
 22. [Retour à l'état d'avant les 4 ArUco de cartographie](#étape-22--retour-à-létat-davant-les-4-aruco-de-cartographie)
 23. [Vérification de la prise par la caméra et relance automatique](#étape-23--vérification-de-la-prise-par-la-caméra-et-relance-automatique)
+24. [Jeu Pierre - Feuille - Ciseaux (Chifoumi) avec caméra réelle et bras simulé](#étape-24--jeu-pierre---feuille---ciseaux-chifoumi-avec-caméra-réelle-et-bras-simulé)
 
 ---
 
@@ -824,3 +825,35 @@ Le bras est allé déposer une pince vide. Le panneau n'y est pour rien (même s
 → second critère : un cube **encore posé sur la table à moins de 6 cm de la verticale de la pince** (`RAYON_TABLE_M`,
 contour à portée projeté sur le plan de la table) rend la prise **ratée**, quelle que soit la distance dans l'image. Un cube
 réellement tenu (≈ 14 cm de haut) se projette à ≈ 27 cm de cette verticale avec la caméra actuelle, donc reste validé.
+
+---
+
+## Étape 24 — Jeu Pierre - Feuille - Ciseaux (Chifoumi) avec caméra réelle et bras simulé
+
+**Objectif :** transformer la stack en un jeu interactif temps réel : l'humain joue contre le bras robotisé SO-ARM101 en simulation (MuJoCo / RViz). Une caméra réelle filme la main de l'utilisateur, MediaPipe classifie le geste (Pierre, Feuille, Ciseaux), et le robot joue en simultané avec un décompte synchronisé.
+
+**Conception & Implémentation :**
+1. **Détection de main (`handGesture/hand_detector.py`) :**
+   - MediaPipe Hands (21 points clés / landmarks) avec backend caméra macOS (`AVFoundation`).
+   - Analyse d'extension des doigts (distances euclidiennes bout de doigt / articulation intermédiaire / poignet).
+   - Classification : Pierre (0 doigt levé), Feuille (4 ou 5 doigts), Ciseaux (index et majeur uniquement).
+   - Lissage temporel par vote majoritaire sur les 5 dernières frames pour éliminer le sautillement.
+2. **Contrôleur robotique (`handGesture/robot_chifoumi.py`) :**
+   - Poses articulaires dédiées : `READY` (en garde face au joueur), `PUMP_UP` / `PUMP_DOWN` (balancements verticaux 1, 2, 3), `PIERRE` (pince serrée à 0%), `FEUILLE` (pince ouverte à 100%, poignet à plat 90°), `CISEAUX` (pince à 45%, poignet orienté horizontalement façon lames).
+   - Animations de victoire (danse du robot) et de défaite (tête baissée).
+   - Passerelle directe avec ROS 2 via `/joint_command` (relayé par l'API REST de `joint_panel` sur `http://localhost:8080`).
+3. **Application de jeu (`handGesture/chifoumi_game.py`) :**
+   - Compte à rebours animé en 3 temps (« 1... Pierre », « 2... Feuille », « 3... Ciseaux », « SHOOT ! ») avec balancements synchronisés du bras.
+   - Capture et verrouillage de la pose de l'humain à l'instant précis du tir (anti-triche).
+   - Arbitrage automatique, affichage HUD avec scores en direct, mode manuel (ESPACE) et mode automatique (A).
+4. **Intégration et documentation :**
+   - Script de démarrage rapide : `./scripts/chifoumi.sh` (ou `./scripts/chifoumi.sh --test`).
+   - Guide technique et vulgarisation pour les personnes non-roboticiennes : [`docs/CHIFOUMI.md`](CHIFOUMI.md).
+   - Poses et séquence `chifoumi_demo` ajoutées dans `ros2_ws/tools/joint_panel/poses.json`.
+   - Suivi des évolutions dans [`CHANGELOG.md`](../CHANGELOG.md).
+
+**Vérification :**
+- `uv run python -m py_compile` sur tous les fichiers du module `handGesture/` : OK (code 0).
+- `uv run handGesture/robot_chifoumi.py` : initialisation et vérification de connexion OK.
+- `scripts/chifoumi.sh` exécutable et testé.
+

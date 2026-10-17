@@ -114,6 +114,27 @@
     </div>
   </section>
 
+  <section class="carte pleine">
+    <h2>🎮 Chifoumi (Pierre - Feuille - Ciseaux) <small class="vide">(Simulation ROS 2 MuJoCo / RViz)</small></h2>
+    <div class="grab">
+      <div>
+        <p class="note">Tester les gestes du bras robotisé directement dans la simulation ROS 2 :</p>
+        <div class="barre">
+          <button id="btn-chifoumi-garde">🛡️ En garde</button>
+          <button id="btn-chifoumi-pierre">🪨 Pierre</button>
+          <button id="btn-chifoumi-feuille">📄 Feuille</button>
+          <button id="btn-chifoumi-ciseaux">✂️ Ciseaux</button>
+          <button class="primaire" id="btn-chifoumi-demo">▶ Démo complète (1-2-3)</button>
+        </div>
+      </div>
+      <div>
+        <h2 style="font-size:13px">Lancement avec détection de votre main par webcam</h2>
+        <pre>./scripts/chifoumi.sh</pre>
+        <p class="note">MediaPipe capture votre main en direct sur le Mac et synchronise le coup avec le bras simulé dans Docker (visible sur RViz :6080).</p>
+      </div>
+    </div>
+  </section>
+
   <section class="carte">
     <h2>Joints <small class="vide">(rad, pince 0-100 %)</small></h2>
     <div id="joints"></div>
@@ -413,6 +434,24 @@ $("sauver-sequence").onclick = () => {
   donnees.sequences[nom] = structuredClone(sequence); $("nom-sequence").value = ""; sauver(); afficherSequences();
 };
 $("copier-commande").onclick = () => navigator.clipboard.writeText($("commande").textContent);
+
+// Chifoumi actions rapides
+const allerPoseChifoumi = (nom) => {
+  if (donnees.poses && donnees.poses[nom]) {
+    ecrireConsigne(donnees.poses[nom]);
+    api("/api/lecture", { boucle: false, poses: [{ joints: donnees.poses[nom], duree: 0.8 }] }).catch(alerte);
+  }
+};
+$("btn-chifoumi-garde").onclick = () => allerPoseChifoumi("chifoumi_garde");
+$("btn-chifoumi-pierre").onclick = () => allerPoseChifoumi("chifoumi_pierre");
+$("btn-chifoumi-feuille").onclick = () => allerPoseChifoumi("chifoumi_feuille");
+$("btn-chifoumi-ciseaux").onclick = () => allerPoseChifoumi("chifoumi_ciseaux");
+$("btn-chifoumi-demo").onclick = () => {
+  if (donnees.sequences && donnees.sequences["chifoumi_demo"]) {
+    const seq = donnees.sequences["chifoumi_demo"];
+    api("/api/lecture", { boucle: false, poses: seq.map((e) => ({ joints: donnees.poses[e.pose], duree: e.duree })) }).catch(alerte);
+  }
+};
 
 (async () => {
   const r = await api("/api/etat");
