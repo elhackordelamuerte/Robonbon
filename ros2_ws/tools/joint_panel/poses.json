@@ -31,6 +31,38 @@
       "wrist_flex": 0.6,
       "wrist_roll": -0.8,
       "gripper": 80
+    },
+    "chifoumi_garde": {
+      "shoulder_pan": 0.0,
+      "shoulder_lift": -0.5,
+      "elbow_flex": 0.7,
+      "wrist_flex": 0.4,
+      "wrist_roll": 0.0,
+      "gripper": 15
+    },
+    "chifoumi_pierre": {
+      "shoulder_pan": 0.0,
+      "shoulder_lift": -0.42,
+      "elbow_flex": 0.75,
+      "wrist_flex": 0.35,
+      "wrist_roll": 0.0,
+      "gripper": 0
+    },
+    "chifoumi_feuille": {
+      "shoulder_pan": 0.0,
+      "shoulder_lift": -0.45,
+      "elbow_flex": 0.65,
+      "wrist_flex": 0.1,
+      "wrist_roll": 1.57,
+      "gripper": 100
+    },
+    "chifoumi_ciseaux": {
+      "shoulder_pan": 0.0,
+      "shoulder_lift": -0.4,
+      "elbow_flex": 0.7,
+      "wrist_flex": 0.25,
+      "wrist_roll": 1.57,
+      "gripper": 45
     }
   },
   "sequences": {
@@ -50,6 +82,36 @@
       {
         "pose": "repos",
         "duree": 1.5
+      }
+    ],
+    "chifoumi_demo": [
+      {
+        "pose": "chifoumi_garde",
+        "duree": 1.0
+      },
+      {
+        "pose": "chifoumi_pierre",
+        "duree": 1.0
+      },
+      {
+        "pose": "chifoumi_garde",
+        "duree": 0.6
+      },
+      {
+        "pose": "chifoumi_feuille",
+        "duree": 1.0
+      },
+      {
+        "pose": "chifoumi_garde",
+        "duree": 0.6
+      },
+      {
+        "pose": "chifoumi_ciseaux",
+        "duree": 1.0
+      },
+      {
+        "pose": "chifoumi_garde",
+        "duree": 1.0
       }
     ]
   }

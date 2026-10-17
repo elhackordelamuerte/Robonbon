@@ -9,3 +9,5 @@ Simulation, IK, perception and pick & place on the SO-ARM101 arm, with ROS2 and 
 - Perception et topics ROS (sim + caméra réelle) : [`docs/PERCEPTION_ROS.md`](docs/PERCEPTION_ROS.md)
 - Piloter le vrai bras depuis un Mac (pont série, calibration LeRobot) : [`docs/BRAS_REEL.md`](docs/BRAS_REEL.md)
 - Journal de résolution (étapes, problèmes, solutions) : [`docs/JOURNAL.md`](docs/JOURNAL.md)
+- Jeu Pierre - Feuille - Ciseaux (Chifoumi avec vision et simulation) : [`docs/CHIFOUMI.md`](docs/CHIFOUMI.md)
+- Journal des modifications : [`CHANGELOG.md`](CHANGELOG.md)
