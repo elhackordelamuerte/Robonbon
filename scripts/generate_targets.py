@@ -70,7 +70,6 @@ def marqueur() -> np.ndarray:
     legende(page, f"ArUco 4x4_50 id {MARQUEUR_ID}, {MARQUEUR_MM:.0f} mm - imprimer a 100 %")
     return page
 
-
 def main() -> None:
     DOSSIER.mkdir(exist_ok=True)
     for nom, image in (("damier_9x6_25mm", damier()), ("aruco_4x4_id0_80mm", marqueur())):
