@@ -60,7 +60,11 @@ class DriverNode(rclpy.node.Node):
         self._joint_state_pub = self.create_publisher(JointState, "/joint_states", 20)
         self._joint_timer = self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
 
+        # Latest target per joint (radians, gripper 0-100 %), sent by _control_step.
+        self._target: dict[str, float] = {}
+        self._has_new_target = False
         self._joint_command_sub = self.create_subscription(JointState, "/joint_command", self._cb_joint_command, 10)
+        self._control_timer = self.create_timer(1.0 / CONTROL_HZ, self._control_step)
 
         # TODO: create the publishers, subscribers and timers.
 
@@ -99,10 +103,28 @@ class DriverNode(rclpy.node.Node):
         self._robot.disconnect()
 
     def _cb_joint_command(self, msg: JointState):
-        self.steps.append(dict(zip(msg.name, msg.position)))
+        if len(msg.name) != len(msg.position):
+            self.get_logger().warn("/joint_command: name and position lengths differ, ignored")
+            return
+        for name, position in zip(msg.name, msg.position):
+            if name not in JOINT_NAMES:
+                self.get_logger().warn(f"/joint_command: unknown joint '{name}', ignored")
+                continue
+            # Partial commands only update the given joints, the others keep their target.
+            self._target[name] = float(position)
+            self._has_new_target = True
 
     def _control_step(self):
-        raise NotImplementedError("TO DO")
+        """Forwards the latest /joint_command target to the backend."""
+        if not self._has_new_target:
+            return
+        action = {f"{name}.pos": value for name, value in self._target.items()}
+        try:
+            self._robot.send_action(action)
+        except Exception as e:
+            self.get_logger().error(f"send_action failed: {e}", throttle_duration_sec=1.0)
+            return
+        self._has_new_target = False
 
     def _publish_joint_states(self):
         joint_state_msg = JointState()

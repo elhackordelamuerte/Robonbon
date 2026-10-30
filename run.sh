@@ -2,10 +2,11 @@
 # Démarre / redémarre les conteneurs Docker du projet et configure X11 pour RViz.
 #
 # Usage: ./run.sh [commande]
-#   start    (défaut) installe les prérequis si besoin, build et lance control + viz
-#   restart  redémarre les conteneurs (sans rebuild)
+#   start    (défaut) installe les prérequis si besoin, lance DroidCam, build et lance control + viz
+#   restart  redémarre DroidCam et les conteneurs (sans rebuild)
 #   rebuild  rebuild les images puis relance
-#   stop     arrête les conteneurs
+#   stop     arrête les conteneurs et DroidCam
+#   cam      (re)lance seulement DroidCam
 #   rviz     ouvre RViz dans le conteneur control
 #   shell    ouvre un shell ROS dans le conteneur control
 #   logs     suit les logs des conteneurs
@@ -56,6 +57,74 @@ install_prereqs() {
 }
 
 # Utilise sudo pour docker tant que le groupe n'est pas actif dans la session
+# Lit docker/.env (DROIDCAM_IP, DROIDCAM_PORT...) sans écraser l'environnement
+load_env() {
+  [ -f "$DOCKER_DIR/.env" ] || return 0
+  set -a
+  # shellcheck disable=SC1091
+  . "$DOCKER_DIR/.env"
+  set +a
+}
+
+# -- DroidCam (iPhone -> /dev/videoN via v4l2loopback) ------------------------
+DROIDCAM_LOG=/tmp/droidcam.log
+
+droidcam_device() {
+  # Trouve le /dev/videoN dont le nom v4l2 contient "droidcam"
+  local d
+  for d in /sys/class/video4linux/video*; do
+    [ -e "$d/name" ] || continue
+    if grep -qi droidcam "$d/name"; then echo "/dev/$(basename "$d")"; return 0; fi
+  done
+  return 1
+}
+
+# Binaire du client : droidcam-cli (anciennes versions) ou droidcam
+droidcam_bin() {
+  if command -v droidcam-cli >/dev/null; then echo droidcam-cli
+  elif command -v droidcam >/dev/null; then echo droidcam
+  else return 1; fi
+}
+
+stop_droidcam() {
+  local b
+  for b in droidcam-cli droidcam; do
+    if pgrep -x "$b" >/dev/null; then
+      pkill -x "$b"
+      info "DroidCam arrêté"
+    fi
+  done
+}
+
+start_droidcam() {
+  if [ -z "${DROIDCAM_IP:-}" ]; then
+    info "DROIDCAM_IP vide dans docker/.env : DroidCam non lancé"
+    return 0
+  fi
+  local bin
+  bin=$(droidcam_bin) || { warn "Client DroidCam introuvable (droidcam / droidcam-cli) : non installé ?"; return 0; }
+
+  stop_droidcam
+  local port="${DROIDCAM_PORT:-4747}"
+  info "Connexion DroidCam à $DROIDCAM_IP:$port (logs : $DROIDCAM_LOG)"
+  nohup "$bin" "$DROIDCAM_IP" "$port" >"$DROIDCAM_LOG" 2>&1 &
+
+  # Attend que le client tienne la connexion et que le périphérique existe
+  local i dev
+  for i in $(seq 1 10); do
+    sleep 1
+    if ! pgrep -x "$bin" >/dev/null; then
+      warn "$bin s'est arrêté : app ouverte sur l'iPhone, même réseau ? Voir $DROIDCAM_LOG"
+      return 0
+    fi
+    if dev=$(droidcam_device); then
+      info "DroidCam prêt sur $dev"
+      return 0
+    fi
+  done
+  warn "Pas de /dev/video DroidCam après 10 s (module v4l2loopback chargé ?)"
+}
+
 docker_cmd() {
   if docker info >/dev/null 2>&1; then docker "$@"; else $SUDO docker "$@"; fi
 }
@@ -86,12 +155,16 @@ setup_x11() {
 start() {
   install_prereqs
   setup_env
+  load_env
+  start_droidcam
   setup_x11
   compose up -d --build "${SERVICES[@]}"
   info "Conteneurs lancés. RViz : ./run.sh rviz   Logs : ./run.sh logs"
 }
 
 restart() {
+  load_env
+  start_droidcam
   setup_x11
   compose restart "${SERVICES[@]}"
   info "Conteneurs redémarrés"
@@ -113,10 +186,11 @@ case "${1:-start}" in
   start)   start ;;
   restart) restart ;;
   rebuild) rebuild ;;
-  stop)    compose down ;;
+  stop)    compose down; stop_droidcam ;;
+  cam)     load_env; start_droidcam ;;
   rviz)    rviz ;;
   shell)   compose exec control bash -lc "source /ros2_ws/install/setup.bash 2>/dev/null; exec bash" ;;
   logs)    compose logs -f "${SERVICES[@]}" ;;
   setup)   install_prereqs; setup_env ;;
-  *)       sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *)       sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
