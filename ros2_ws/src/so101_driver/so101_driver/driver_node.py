@@ -14,9 +14,11 @@ from pathlib import Path
 
 import rclpy
 import rclpy.node
+from cv_bridge import CvBridge
+from lerobot.cameras.opencv import OpenCVCameraConfig
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rclpy.executors import ExternalShutdownException
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from so101_sim import SO101Sim
 
 JOINT_NAMES = [
@@ -38,6 +40,11 @@ DEFAULT_PORT = "/dev/ttyACM0"
 
 CONTROL_HZ = 50.0
 JOINT_STATE_HZ = 30.0
+IMAGE_HZ = 10.0
+
+# Name of the camera in the backend and of its optical frame (z forward, x right, y down).
+CAMERA_NAME = "external_cam"
+CAMERA_FRAME = "external_cam_optical_frame"
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
@@ -66,7 +73,9 @@ class DriverNode(rclpy.node.Node):
         self._joint_command_sub = self.create_subscription(JointState, "/joint_command", self._cb_joint_command, 10)
         self._control_timer = self.create_timer(1.0 / CONTROL_HZ, self._control_step)
 
-        # TODO: create the publishers, subscribers and timers.
+        self._bridge = CvBridge()
+        self._image_pub = self.create_publisher(Image, "/external_cam/image_raw", 10)
+        self._image_timer = self.create_timer(1.0 / IMAGE_HZ, self._publish_image)
 
         self.get_logger().info("Driver node ready.")
 
@@ -86,6 +95,15 @@ class DriverNode(rclpy.node.Node):
             id=CALIBRATION_FILE.stem,
             calibration_dir=CALIBRATION_FILE.parent,
             use_radians=True,
+            cameras={
+                CAMERA_NAME: OpenCVCameraConfig(
+                    index_or_path=0,
+                    color_mode="rgb",
+                    width=1280,
+                    height=720,
+                    fps=30,
+                ),
+            },
         )
         robot = SO101Follower(config)
         robot.connect(calibrate=False)
@@ -141,6 +159,25 @@ class DriverNode(rclpy.node.Node):
                 joint_state_msg.position.append(observation[joint+".pos"])
 
         self._joint_state_pub.publish(joint_state_msg)
+
+    def _read_camera(self):
+        """Latest RGB image (H, W, 3) uint8. Only place that depends on the backend."""
+        if self._use_sim:
+            return self._robot.render_camera()
+        # Read the camera directly: get_observation() would also read the motors on the serial bus.
+        return self._robot.cameras[CAMERA_NAME].read_latest()
+
+    def _publish_image(self):
+        try:
+            image = self._read_camera()
+        except Exception as e:
+            self.get_logger().warn(f"camera read failed: {e}", throttle_duration_sec=1.0)
+            return
+
+        msg = self._bridge.cv2_to_imgmsg(image, encoding="rgb8")
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = CAMERA_FRAME
+        self._image_pub.publish(msg)
 
 
 def main(args=None):
