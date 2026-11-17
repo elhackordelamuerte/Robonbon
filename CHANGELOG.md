@@ -28,7 +28,6 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/)
 
 - **Documentation** :
   - [`docs/CHIFOUMI.md`](file:///Users/techeretienne/Documents/claude_workspace/Robotics/content-lerobot-bras-students/docs/CHIFOUMI.md) : Guide exhaustif incluant une section de vulgarisation scientifique pour les personnes non-roboticiennes (vision par ordinateur, servomoteurs, synchronisation temps réel, arbitrage), la matrice de poses et le guide d'utilisation pas-à-pas.
-  - [`docs/SOUTENANCE_SCRIPT.md`](file:///Users/techeretienne/Documents/claude_workspace/Robotics/content-lerobot-bras-students/docs/SOUTENANCE_SCRIPT.md) : Script oral complet pour la soutenance (jury mixte technique / non-technique), timing, guide de démo et FAQ anticipée.
   - [`docs/JOURNAL.md`](file:///Users/techeretienne/Documents/claude_workspace/Robotics/content-lerobot-bras-students/docs/JOURNAL.md) : Ajout de l'étape 24 documentant la conception et l'intégration du projet Chifoumi.
 
 ### Corrigé
