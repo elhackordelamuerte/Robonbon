@@ -29,6 +29,8 @@ Sommaire :
 22. [Retour à l'état d'avant les 4 ArUco de cartographie](#étape-22--retour-à-létat-davant-les-4-aruco-de-cartographie)
 23. [Vérification de la prise par la caméra et relance automatique](#étape-23--vérification-de-la-prise-par-la-caméra-et-relance-automatique)
 24. [Jeu Pierre - Feuille - Ciseaux (Chifoumi) avec caméra réelle et bras simulé](#étape-24--jeu-pierre---feuille---ciseaux-chifoumi-avec-caméra-réelle-et-bras-simulé)
+25. [Vidéo de démo de la phase 1 en simulation (RViz + overlay)](#étape-25--vidéo-de-démo-de-la-phase-1-en-simulation-rviz--overlay)
+26. [Vidéo de la phase 1 conforme à la soutenance finale (TF, cube, vue scène)](#étape-26--vidéo-de-la-phase-1-conforme-à-la-soutenance-finale-tf-cube-vue-scène)
 
 ---
 
@@ -857,3 +859,57 @@ réellement tenu (≈ 14 cm de haut) se projette à ≈ 27 cm de cette verticale
 - `uv run handGesture/robot_chifoumi.py` : initialisation et vérification de connexion OK.
 - `scripts/chifoumi.sh` exécutable et testé.
 
+
+---
+
+## Étape 25 — Vidéo de démo de la phase 1 en simulation (RViz + overlay)
+
+**Objectif :** suite au retour de la soutenance intermédiaire, produire une vidéo de la simulation vue dans RViz, avec un overlay : étape en cours, essai n°, valeurs en direct, vérification de la prise, incrustation de la caméra, titre et chrono. Elle doit montrer un raté, la relance (retry) et l'offset appris.
+
+**Problèmes et causes :**
+- Provoquer un raté sans modifier le code du robot. Une erreur de 8, 12 ou 20 mm sur la position du cube est rattrapée : les mâchoires recentrent le cube en se fermant. À 30 mm, l'essai 2 (25 mm d'écart) rate et l'essai 6 (20 mm) réussit. Le seuil se situe donc entre 20 et 25 mm, et il dépend de l'orientation du cube, qui est tirée au hasard.
+- `docker restart tek5-control-1` seul casse DDS : `/reset_object` reste bloqué et la perception ne reçoit plus d'images.
+- Le tirage aléatoire du cube le place parfois au bord de l'image (« cube cut by the image border »).
+- Le ffmpeg de Homebrew n'a ni libass ni drawtext.
+
+**Solution :**
+- **Erreur de calibration simulée :** on utilise le mécanisme existant `correction_objet` (`perception_node.py`, l. 159-165). La perception de la sim est relancée avec un fichier de pose caméra : `cam_T` du driver + `correction_objet: [0, 0.025]`. Le 1er essai vise 25 mm à côté et rate ; la relance à (0, −5) mm réussit ; l'offset appris (0, −5) mm fait réussir le cube suivant du premier coup.
+- **Tournage (`scripts/video_sim.sh`) :**
+  - relance toute la stack, ce qui remet l'offset appris à zéro ;
+  - un conteneur `tek5-video` (Xvfb + ffmpeg) lance RViz avec `ros2_ws/tools/video/so101_video.rviz` (vue dédiée, flèche cyan = `/object_position`) ;
+  - ffmpeg filme la vue 3D (x11grab, 1920×1080) pendant que `enregistreur.py` note `/rosout`, `/object_position` et `/perception/debug` avec l'heure murale ;
+  - si le 1er cube est pris du premier coup, la prise est recommencée (`MAX_PRISES`). L'offset appris reste nul dans ce cas.
+- **Montage (`ros2_ws/tools/video/montage.py`, dans le conteneur) :** les logs réels deviennent des sous-titres ASS synchronisés (étapes traduites en français, verdicts avec distance et seuil, bilan). L'incrustation caméra et le chrono passent par ffmpeg. Seul l'offset appris est déduit, puisque le cerveau ne le logge pas : c'est le décalage de l'essai validé (`brain_node.py`, l. 264 et 462).
+
+**Vérification :**
+- `./scripts/video_sim.sh` → `docs/soutenance/videos/pick_place_sim.mp4` (1920×1080, 30 i/s, 111 s).
+- Bilan de la prise retenue :
+  - cube 1, essai 1 : raté (25,3 px, seuil 35 px) ;
+  - cube 1, essai 2 : réussi (11,7 px) ;
+  - cube 2, essai 1 : réussi (8,4 px), du premier coup grâce à l'offset appris.
+- Images contrôlées à 2,5 s, 28,5 s, 33 s, 92 s et 107 s : pas de chevauchement entre les overlays.
+
+---
+
+## Étape 26 — Vidéo de la phase 1 conforme à la soutenance finale (TF, cube, vue scène)
+
+**Objectif :** la consigne de la soutenance finale demande que la vidéo montre la vue caméra avec la détection, rviz2 avec **les TF, le robot et le cube**, et **la scène**. La vidéo de l'étape 25 n'avait ni TF, ni cube dans RViz (seulement une flèche), ni vue d'ensemble de la scène.
+
+**Problèmes et causes :**
+- L'arbre TF ne contient pas la caméra : rien ne publie `world → external_cam`.
+- Dans RViz, `Frames: All Enabled: false` n'est pas respecté au chargement : tous les repères du bras s'affichent, illisibles. Il faut passer par `Filter (whitelist)` (regex).
+- Les incrustations couvrent la colonne de droite et les valeurs couvrent le bas à gauche : la vue doit tenir dans la zone restante.
+- `ros2 param get /so101_driver` échoue juste après la création du conteneur vidéo (« Node not found ») : la découverte DDS prend quelques secondes.
+- Un raté peut afficher « 10,4 px (seuil 35 px) » : la perception rejette aussi une prise quand le cube est **resté sur la table** sous la pince (`RAYON_TABLE_M`), ce que le texte ne disait pas.
+
+**Solution :**
+- `driver_node.py` : paramètre `scene_view` (faux par défaut) qui publie une vue d'ensemble MuJoCo sur `/scene_cam/image_raw` (caméra libre, 640×480, 10 Hz). Le script l'active seulement pendant le tournage.
+- `ros2_ws/tools/video/aides_rviz.py` : TF statique `world → external_cam` tiré de `cam_T`, et marqueur cube (`/video/cube`) à la position publiée par la perception.
+- `so101_video.rviz` : affichage TF filtré sur `world|base_link|gripper_frame_link|external_cam`, cube rouge, vue réglée (distance 1,5, pitch 0,45, yaw −1,25) sur des captures d'essai.
+- `enregistreur.py` enregistre aussi `scene/*.jpg` ; `montage.py` ajoute la 2ᵉ incrustation « Scène · simulation MuJoCo » et affiche la vraie raison du raté (« le cube est resté sur la table »).
+- `video_sim.sh` attend que le driver soit visible avant de lire `cam_T`.
+
+**Vérification :**
+- `./scripts/video_sim.sh` → `docs/soutenance/videos/pick_place_sim.mp4` (1920×1080, 109 s).
+- Bilan : cube 1, essai 1 raté (resté sur la table) → essai 2 réussi (10,7 px) ; cube 2 réussi du premier coup (4,2 px).
+- Images contrôlées à 2,5 s, 20 s, 26,5 s, 45 s et 106 s : TF, robot et cube visibles dans RViz, détection et scène en incrustation, pas de chevauchement.
