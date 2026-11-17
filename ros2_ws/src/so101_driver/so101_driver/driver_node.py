@@ -7,6 +7,7 @@ knows which one runs.
 """
 from pathlib import Path
 
+import mujoco
 import rclpy
 import rclpy.node
 from cv_bridge import CvBridge
@@ -49,6 +50,15 @@ JOINT_STATE_HZ = 30.0
 CAMERA_HZ = 10.0
 CAMERA_FRAME = "external_cam"
 FAKE_PERCEPTION_HZ = 5.0
+
+# Overview of the scene (demo video only, off by default):
+#   ros2 param set /so101_driver scene_view true   ->  /scene_cam/image_raw
+SCENE_FRAME = "scene_cam"
+SCENE_SIZE = (640, 480)  # width, height (within offwidth/offheight of the MJCF)
+SCENE_LOOKAT = (0.15, -0.05, 0.08)
+SCENE_DISTANCE = 0.78
+SCENE_AZIMUTH = 135.0
+SCENE_ELEVATION = -28.0
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
@@ -108,6 +118,11 @@ class DriverNode(rclpy.node.Node):
             self.create_timer(1.0 / FAKE_PERCEPTION_HZ, self._publish_ground_truth)
             self.create_service(Trigger, "/reset_object", self._srv_reset_object)
 
+            self.declare_parameter("scene_view", False)
+            self._scene_pub = self.create_publisher(Image, "/scene_cam/image_raw", 2)
+            self._scene_renderer: mujoco.Renderer | None = None
+            self.create_timer(1.0 / CAMERA_HZ, self._publish_scene)
+
         self.get_logger().info("Driver node ready.")
 
     def _connect_arm(self, port: str = DEFAULT_PORT) -> SO101Sim | SO101Follower:
@@ -145,6 +160,8 @@ class DriverNode(rclpy.node.Node):
 
     def destroy_node(self):
         """Disconnects the backend (provided). On the real arm this disables the torque."""
+        if getattr(self, "_scene_renderer", None) is not None:
+            self._scene_renderer.close()
         if self._robot is not None and self._robot.is_connected:
             self._robot.disconnect()
             self.get_logger().info("Robot disconnected.")
@@ -203,6 +220,24 @@ class DriverNode(rclpy.node.Node):
         self._camera_info.header.stamp = img.header.stamp
         self._image_pub.publish(img)
         self._camera_info_pub.publish(self._camera_info)
+
+    def _publish_scene(self):
+        """Overview of the whole scene from a free MuJoCo camera (demo video)."""
+        if not self.get_parameter("scene_view").value:
+            return
+        if self._scene_renderer is None:
+            width, height = SCENE_SIZE
+            self._scene_renderer = mujoco.Renderer(self._robot.model, height=height, width=width)
+            self._scene_camera = mujoco.MjvCamera()
+            self._scene_camera.lookat[:] = SCENE_LOOKAT
+            self._scene_camera.distance = SCENE_DISTANCE
+            self._scene_camera.azimuth = SCENE_AZIMUTH
+            self._scene_camera.elevation = SCENE_ELEVATION
+        self._scene_renderer.update_scene(self._robot.data, camera=self._scene_camera)
+        img = self._bridge.cv2_to_imgmsg(self._scene_renderer.render(), encoding="rgb8")
+        img.header.stamp = self.get_clock().now().to_msg()
+        img.header.frame_id = SCENE_FRAME
+        self._scene_pub.publish(img)
 
     def _publish_ground_truth(self):
         if not self.get_parameter("fake_perception").value:
