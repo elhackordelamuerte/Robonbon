@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+docker/.env
+
+.venv/
+venv/
+env/
+
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# JetBrains IDEs
+.idea/
+
+# Rviz
+*.rviz
+*.rbv
+
+# Calibration
+calib/
+calib_targets/
+
+# macOS
+.DS_Store
+
+# Supports de soutenance de l'équipe (restent en local)
+docs/soutenance/
+docs/SOUTENANCE_SCRIPT.md

@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "brain = so101_brain.brain_node:main",
+            "ik_accuracy = so101_brain.ik_accuracy:main",
         ],
     },
 )
