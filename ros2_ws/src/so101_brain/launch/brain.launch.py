@@ -12,4 +12,11 @@ def generate_launch_description():
             name="so101_brain",
             output="screen",
         ),
+        # Échiquier dans RViz : /chess/state et /chess/predicted -> /chess/markers
+        Node(
+            package="so101_brain",
+            executable="chess_markers",
+            name="chess_markers",
+            output="screen",
+        ),
     ])

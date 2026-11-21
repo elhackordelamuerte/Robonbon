@@ -64,6 +64,10 @@ load_env() {
   # shellcheck disable=SC1091
   . "$DOCKER_DIR/.env"
   set +a
+  # COMPOSE_PROFILES=perception dans .env : lance aussi le conteneur perception
+  if [[ ",${COMPOSE_PROFILES:-}," == *",perception,"* ]] && [[ ! " ${SERVICES[*]} " == *" perception "* ]]; then
+    SERVICES+=(perception)
+  fi
 }
 
 # -- DroidCam (iPhone -> /dev/videoN via v4l2loopback) ------------------------
@@ -171,6 +175,7 @@ restart() {
 }
 
 rebuild() {
+  load_env
   setup_x11
   compose down
   compose build
@@ -190,7 +195,7 @@ case "${1:-start}" in
   cam)     load_env; start_droidcam ;;
   rviz)    rviz ;;
   shell)   compose exec control bash -lc "source /ros2_ws/install/setup.bash 2>/dev/null; exec bash" ;;
-  logs)    compose logs -f "${SERVICES[@]}" ;;
+  logs)    load_env; compose logs -f "${SERVICES[@]}" ;;
   setup)   install_prereqs; setup_env ;;
   *)       sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

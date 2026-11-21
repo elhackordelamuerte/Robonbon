@@ -1,1 +1,6 @@
 ros2_ws/src/so101_driver/so101_driver/__pycache__/
+dataset
+yolo*
+__pycache__/
+runs
+ros2_ws/src/so101_driver/so101_driver/__pycache__/driver_node.cpython-312.pyc

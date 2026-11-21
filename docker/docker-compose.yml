@@ -26,6 +26,10 @@ services:
     environment:
       <<: *ros-env
       USE_SIM: ${USE_SIM:-true}
+      # Position du plateau d'échecs : coin extérieur de a1 dans le repère du bras (m, °)
+      BOARD_X: ${BOARD_X:-0.10}
+      BOARD_Y: ${BOARD_Y:-0.10}
+      BOARD_YAW: ${BOARD_YAW:--90}
       REAL_ROBOT_PORT: ${REAL_ROBOT_PORT:-/dev/ttyACM0}
       MUJOCO_GL: osmesa
       DISPLAY: ${DISPLAY}
@@ -42,8 +46,8 @@ services:
       - ./control_entrypoint.sh:/opt/so101/entrypoint.sh:ro
       - ${CALIBRATION_FILE:-/dev/null}:/calibration/arm.json:ro
     networks: [rosnet]
-    devices:
-      - /dev/video0:/dev/video0
+    # Caméra : /dev est monté et la règle 'c 81:* rmw' autorise les /dev/videoN,
+    # pas de "devices:" sinon le conteneur refuse de démarrer quand la caméra est absente.
     stdin_open: true
     tty: true
     # Only container that builds (concurrent colcon on the same volume = conflicts).
@@ -66,6 +70,53 @@ services:
       cd /ros2_ws && source install/setup.bash &&
       ros2 launch so101_description viz.launch.py"
 
+  # Échiquier : YOLO + plateau -> /chess/state (so101_perception/chess_perception_node.py).
+  # Activé seulement si docker/.env contient COMPOSE_PROFILES=perception.
+  # ultralytics n'est pas dans l'image (Dockerfile.perception inchangé) : installé au premier
+  # lancement dans le volume yolo_pkgs, puis réutilisé.
+  # Pas de colcon ici (le build est fait par control) : le paquet est lancé depuis les sources.
+  perception:
+    profiles: [perception]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.perception
+    image: tek5/perception
+    init: true
+    environment:
+      <<: *ros-env
+      PYTHONPATH: /opt/yolo
+    volumes:
+      - ../ros2_ws:/ros2_ws
+      - ../runs:/runs                 # poids YOLO (runs/detect/...) et sortie runs/scene/latest.*
+      - ../images:/images:ro          # photos de test (PERCEPTION_SOURCE=/images/image2.jpg)
+      - yolo_pkgs:/opt/yolo
+      - /dev:/dev                     # caméra si présente (DroidCam), sans bloquer le démarrage
+    device_cgroup_rules:
+      - 'c 81:* rmw'                  # périphériques vidéo /dev/videoN
+    networks: [rosnet]
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      if ! python3 -c 'import ultralytics' 2>/dev/null; then
+      echo 'installation de ultralytics (premier lancement)...' &&
+      pip install --break-system-packages --no-cache-dir --target /opt/yolo
+      --extra-index-url https://download.pytorch.org/whl/cpu
+      torch torchvision matplotlib polars scipy pyyaml requests psutil pillow &&
+      pip install --break-system-packages --no-cache-dir --target /opt/yolo --no-deps ultralytics ultralytics-thop;
+      fi &&
+      cd /ros2_ws/src/so101_perception &&
+      python3 -m so101_perception.chess_perception_node --ros-args
+      -p source:=${PERCEPTION_SOURCE:-/dev/video0}
+      -p weights:=${YOLO_WEIGHTS:-/runs/detect/train-17/weights/best.pt}
+      -p conf:=${YOLO_CONF:-0.25}
+      -p flip:=${PERCEPTION_FLIP:-false}
+      -p marker_size:=${MARKER_SIZE:-0.08}
+      -p marker_x:=${MARKER_X:-0.10}
+      -p marker_y:=${MARKER_Y:-0.0}
+      -p marker_yaw:=${MARKER_YAW:-0.0}"
+
 networks:
   rosnet:
     driver: bridge
+
+volumes:
+  yolo_pkgs:

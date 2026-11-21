@@ -19,6 +19,8 @@ setup(
     entry_points={
         "console_scripts": [
             "brain = so101_brain.brain_node:main",
+            "world_model = so101_brain.world_model:main",
+            "chess_markers = so101_brain.chess_markers:main",
         ],
     },
 )

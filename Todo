@@ -1,7 +1,9 @@
-- [] Photo de la scène
-- [] Analyser + récuperer les données avec yolo
-- [] Refaire la scène en simulation
-- [] Tester la prise d'objet
-- [] Comment créer le world model
-- [] Prédire l'état suivant
-- [] Prédire une suite d'états
+- [X] Photo de la scène
+- [X] Analyser + récuperer les données avec yolo        -> so101_perception/chess_vision.py + chess_perception_node.py
+- [X] Refaire la scène en simulation                   -> so101_brain/world_model.py (plateau prédit)
+- [X] Tester la prise d'objet                          -> so101_brain/world_model.py b2b2 (prise + repose)
+- [X] Comment créer le world model                     -> docs/WORLD_MODEL.md
+- [X] Prédire l'état suivant                           -> ros2 run so101_brain world_model b2b4
+- [X] Prédire une suite d'états                        -> ros2 run so101_brain world_model b2b4 d4c6
+- [] Mesurer : taille des cases, pièces, position du plateau / bras
+- [] Réentraîner YOLO (confusions reine/roi, pion/tour)

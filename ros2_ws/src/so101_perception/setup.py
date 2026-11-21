@@ -16,6 +16,7 @@ setup(
     entry_points={
         "console_scripts": [
             "perception = so101_perception.perception_node:main",
+            "chess_perception = so101_perception.chess_perception_node:main",
         ],
     },
 )
